@@ -32,6 +32,10 @@ class APIHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        if path == "" or path == "/":
+            self._json(200, {"status": "ok", "message": "MP3 Downloader Server"})
+            return
+
         if path == "/api/search":
             q = parse_qs(parsed.query).get("q", [""])[0]
             if not q:
