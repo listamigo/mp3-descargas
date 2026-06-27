@@ -2,7 +2,7 @@ services:
   - type: web
     name: mp3downloader-server
     runtime: docker
-    repo: https://github.com/listamigo/mp3downloader-server
+    repo: https://github.com/listamigo/mp3-descargas
     plan: free
     envVars:
       - key: PORT
