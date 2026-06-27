@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: mp3downloader-server
+    runtime: docker
+    repo: https://github.com/listamigo/mp3downloader-server
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8899
+    healthCheckPath: /api/health
