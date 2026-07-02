@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
@@ -64,29 +65,46 @@ class APIHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "Not found"})
 
     def _proxy_download(self, video_id: str, title: str) -> None:
+        import select as _select
         yt_url = f"https://youtube.com/watch?v={video_id}"
         safe_title = "".join(c for c in title if c.isalnum() or c in " ._-").strip() or "audio"
         try:
             proc = subprocess.Popen(
-                ["yt-dlp", "--no-warnings", "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                ["yt-dlp", "--no-warnings",
+                 "-f", "bestaudio[ext=m4a]/bestaudio/best",
                  "-o", "-", "--no-playlist", yt_url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
+
+            # Wait for first data before responding (allow for Render cold start)
+            ready = _select.select([proc.stdout], [], [], 60.0)
+            if not ready[0]:
+                proc.kill()
+                self._json(500, {"error": "yt-dlp timed out"})
+                return
+
+            first_chunk = proc.stdout.read(8192)
+            if not first_chunk:
+                proc.kill()
+                self._json(500, {"error": "yt-dlp produced no output"})
+                return
+
             self.send_response(200)
             self.send_header("Content-Type", "audio/mp4")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Connection", "close")
             self.end_headers()
-            buf = bytearray(4096)
+
+            self.wfile.write(first_chunk)
             while True:
-                n = proc.stdout.readinto(buf)
-                if not n:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
                     break
-                self.wfile.write(buf[:n])
+                self.wfile.write(chunk)
                 self.wfile.flush()
+
             proc.stdout.close()
-            proc.wait()
+            proc.wait(timeout=10)
             if proc.returncode != 0:
                 err = proc.stderr.read().decode(errors="replace")[:200]
                 print(f"[API] yt-dlp error for {video_id}: {err}", flush=True)
