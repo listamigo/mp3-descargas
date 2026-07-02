@@ -80,13 +80,17 @@ class APIHandler(BaseHTTPRequestHandler):
             ready = _select.select([proc.stdout], [], [], 60.0)
             if not ready[0]:
                 proc.kill()
-                self._json(500, {"error": "yt-dlp timed out"})
+                _, stderr = proc.communicate(timeout=5)
+                err = stderr.decode(errors="replace")[:300]
+                self._json(500, {"error": f"yt-dlp timed out. Stderr: {err}"})
                 return
 
             first_chunk = proc.stdout.read(8192)
             if not first_chunk:
                 proc.kill()
-                self._json(500, {"error": "yt-dlp produced no output"})
+                _, stderr = proc.communicate(timeout=5)
+                err = stderr.decode(errors="replace")[:300]
+                self._json(500, {"error": f"yt-dlp produced no output. Stderr: {err}"})
                 return
 
             self.send_response(200)
