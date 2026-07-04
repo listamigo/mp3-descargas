@@ -4,6 +4,8 @@ services:
     runtime: docker
     repo: https://github.com/listamigo/mp3-descargas
     plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: PORT
         value: 8899
