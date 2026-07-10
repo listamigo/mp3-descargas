@@ -1,0 +1,39 @@
+[Unit]
+Description=MP3 Downloader Server — yt-dlp API para descargas de YouTube
+Documentation=https://github.com/tu-usuario/mp3-downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Directorio de trabajo
+WorkingDirectory=/opt/mp3downloader
+
+# Entorno virtual de Python
+ExecStart=/opt/mp3downloader/venv/bin/python /opt/mp3downloader/server.py
+
+# Variables de entorno (cargar desde archivo)
+EnvironmentFile=/opt/mp3downloader/.env
+
+# Auto-reinicio en caso de fallo
+Restart=always
+RestartSec=10
+
+# Límites del sistema
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Seguridad básica
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/mp3downloader /var/mp3-downloads
+
+# Logs
+StandardOutput=append:/opt/mp3downloader/logs/server.log
+StandardError=append:/opt/mp3downloader/logs/error.log
+
+[Install]
+WantedBy=multi-user.target
