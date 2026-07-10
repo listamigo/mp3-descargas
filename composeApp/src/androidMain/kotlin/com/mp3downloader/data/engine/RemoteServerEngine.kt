@@ -98,7 +98,7 @@ class RemoteServerEngine : DownloadEngine {
         emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, 0f))
 
         val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
-        val outputFile = File(outputDir, "$safeTitle.m4a")
+        val outputFile = File(outputDir, "$safeTitle.mp3")
 
         try {
             activeDownloads[song.id] = true

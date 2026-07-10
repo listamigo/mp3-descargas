@@ -21,11 +21,11 @@ COOKIES_FILE = os.environ.get(
 
 
 PLAYER_CLIENTS = [
-    "android_vr,web",
-    "android,web",
-    "ios,web",
-    "mweb,web",
     "web",
+    "mweb",
+    "android",
+    "ios",
+    "android_vr,web",
 ]
 
 

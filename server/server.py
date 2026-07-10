@@ -247,13 +247,13 @@ class APIHandler(BaseHTTPRequestHandler):
 
     # ─── Proxy download (streaming) ──────────────────────────
     def _proxy_download(self, video_id: str, title: str) -> None:
-        import select as _select
         import signal as _signal
         import tempfile
 
         yt_url = f"https://youtube.com/watch?v={video_id}"
         tmp_dir = tempfile.mkdtemp(prefix="mp3dl_")
-        tmp_m4a = os.path.join(tmp_dir, f"{video_id}.m4a")
+        tmp_audio = os.path.join(tmp_dir, f"{video_id}.m4a")
+        tmp_thumb = os.path.join(tmp_dir, f"{video_id}.jpg")
         tmp_mp3 = os.path.join(tmp_dir, f"{video_id}.mp3")
 
         try:
@@ -262,15 +262,23 @@ class APIHandler(BaseHTTPRequestHandler):
             last_err = ""
             downloaded = False
 
-            # Step 1: Download via yt-dlp (-f best always works)
+            # Step 1: Download audio + thumbnail + metadata via yt-dlp
             for client in PLAYER_CLIENTS:
                 if downloaded:
                     break
                 cmd = _base_cmd(client) + [
                     "-f", "best",
-                    "-o", tmp_m4a,
+                    "-o", tmp_audio,
                     "--no-playlist",
                     "--no-part",
+                    # Metadata flags
+                    "--add-metadata",
+                    "--write-thumbnail", "--convert-thumbnails", "jpg",
+                    "--parse-metadata", f"title:{title}",
+                    "--parse-metadata", "artist:%(channel)s",
+                    "--parse-metadata", "album:%(playlist_title|)s",
+                    "--parse-metadata", "genre:YouTube Audio",
+                    "--parse-metadata", "comment:%(description).200s",
                     yt_url,
                 ]
 
@@ -279,11 +287,11 @@ class APIHandler(BaseHTTPRequestHandler):
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                     )
                     _, stderr = proc.communicate(timeout=120)
-                    if proc.returncode == 0 and os.path.isfile(tmp_m4a) and os.path.getsize(tmp_m4a) > 1024:
+                    if proc.returncode == 0 and os.path.isfile(tmp_audio) and os.path.getsize(tmp_audio) > 1024:
                         downloaded = True
                     else:
                         last_err = stderr.decode(errors="replace")[:300]
-                        for f in [tmp_m4a, tmp_mp3]:
+                        for f in [tmp_audio, tmp_thumb, tmp_mp3]:
                             if os.path.isfile(f):
                                 os.remove(f)
                 except Exception as e:
@@ -293,24 +301,58 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._json(502, {"error": f"yt-dlp failed: {last_err}"})
                 return
 
-            # Step 2: Convert to MP3 via ffmpeg
+            # Find the thumbnail (yt-dlp may name it differently)
+            thumb_file = None
+            for ext in ["jpg", "png", "webp"]:
+                candidate = os.path.join(tmp_dir, f"{video_id}.{ext}")
+                if os.path.isfile(candidate):
+                    thumb_file = candidate
+                    break
+            # Also check for files with suffixes like .m4a.jpg
+            if not thumb_file:
+                for f in os.listdir(tmp_dir):
+                    if f.endswith((".jpg", ".png", ".webp")) and video_id in f:
+                        thumb_file = os.path.join(tmp_dir, f)
+                        break
+
+            # Step 2: Convert to MP3 + embed thumbnail via ffmpeg
             try:
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", tmp_m4a,
+                ffmpeg_input = ["-i", tmp_audio]
+                ffmpeg_maps = ["-map", "0:a", "-map_metadata", "0"]
+
+                # Embed thumbnail as cover art if available
+                if thumb_file and os.path.isfile(thumb_file):
+                    ffmpeg_input.extend(["-i", thumb_file])
+                    ffmpeg_maps = [
+                        "-map", "0:a", "-map", "1:0",
+                        "-map_metadata", "0",
+                    ]
+
+                ffmpeg_cmd = ["ffmpeg", "-y"] + ffmpeg_input + ffmpeg_maps + [
                     "-codec:a", "libmp3lame", "-q:a", "0",
-                    "-map_metadata", "0",
-                    tmp_mp3,
+                    "-id3v2_version", "3",
                 ]
+
+                # Add cover art metadata if thumbnail exists
+                if thumb_file and os.path.isfile(thumb_file):
+                    ffmpeg_cmd.extend([
+                        "-metadata:s:v", "title=Album cover",
+                        "-metadata:s:v", "comment=Cover (front)",
+                        "-disposition:v", "attached_pic",
+                    ])
+
+                ffmpeg_cmd.append(tmp_mp3)
+
                 proc = subprocess.Popen(
                     ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
                 _, stderr = proc.communicate(timeout=120)
                 if proc.returncode != 0 or not os.path.isfile(tmp_mp3):
                     logger.warning(f"ffmpeg conversion failed, sending M4A: {stderr.decode(errors='replace')[:200]}")
-                    tmp_mp3 = tmp_m4a  # fallback to M4A
+                    tmp_mp3 = tmp_audio  # fallback to M4A
             except Exception as e:
                 logger.warning(f"ffmpeg error, sending M4A: {e}")
-                tmp_mp3 = tmp_m4a
+                tmp_mp3 = tmp_audio
 
             # Step 3: Stream the result
             is_mp3 = tmp_mp3.endswith(".mp3")
@@ -347,9 +389,10 @@ class APIHandler(BaseHTTPRequestHandler):
         finally:
             # Cleanup temp files
             try:
-                for f in [tmp_m4a, tmp_mp3]:
-                    if os.path.isfile(f):
-                        os.remove(f)
+                for f in os.listdir(tmp_dir):
+                    fp = os.path.join(tmp_dir, f)
+                    if os.path.isfile(fp):
+                        os.remove(fp)
                 os.rmdir(tmp_dir)
             except Exception:
                 pass
