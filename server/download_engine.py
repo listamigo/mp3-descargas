@@ -73,7 +73,7 @@ class DownloadEngine:
         last_err = ""
         for client in PLAYER_CLIENTS:
             cmd = _base_cmd(client) + [
-                "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                "-f", "best",
                 "--get-url", url
             ]
             result = subprocess.run(
