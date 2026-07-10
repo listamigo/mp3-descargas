@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 user
 WORKDIR /home/user/app
 
-ARG BUILD_ID=20250710
+RUN echo "rebuild-2025-07-10T13-50" > /tmp/.rebuild
+
 COPY --chown=user:user server/server.py .
 COPY --chown=user:user server/download_engine.py .
 COPY --chown=user:user server/models/ ./models/
