@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.DownloadTask
+import java.io.File
 
 @Composable
 fun DownloadItem(
@@ -89,11 +91,26 @@ fun DownloadItem(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(1.dp))
-                    Text(
-                        text = statusText(task.status),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = statusColor(task.status)
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = statusText(task.status),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = statusColor(task.status)
+                        )
+                        if (isCompleted && task.outputPath != null) {
+                            val fileSize = remember(task.outputPath) {
+                                val f = File(task.outputPath)
+                                if (f.exists()) formatFileSize(f.length()) else null
+                            }
+                            if (fileSize != null) {
+                                Text(
+                                    text = " • $fileSize",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
 
                 if (isActive) {
@@ -228,4 +245,11 @@ private fun statusColor(status: DownloadStatus) = when (status) {
     DownloadStatus.FAILED -> MaterialTheme.colorScheme.error
     DownloadStatus.QUEUED -> MaterialTheme.colorScheme.tertiary
     else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+private fun formatFileSize(bytes: Long): String = when {
+    bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
+    bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
+    bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
 }
