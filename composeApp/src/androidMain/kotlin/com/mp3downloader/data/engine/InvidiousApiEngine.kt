@@ -102,13 +102,16 @@ class InvidiousApiEngine : DownloadEngine {
             val video = json.decodeFromString<InvidiousVideoResponse>(raw)
 
             val formats = video.adaptiveFormats ?: video.formatStreams ?: emptyList()
-            val bestAudio = formats
+            val audioFormats = formats
                 .filter {
                     (it.type?.contains("audio/mp4") == true) ||
                     (it.mimeType?.contains("audio/mp4") == true) ||
                     (it.type?.contains("m4a") == true)
                 }
-                .maxByOrNull { it.bitrate ?: 0 }
+            // Prefer moderate quality (~128kbps) to reduce file size, fall back to best
+            val bestAudio = audioFormats
+                .minByOrNull { kotlin.math.abs((it.bitrate ?: 0) - 128000) }
+                ?: audioFormats.maxByOrNull { it.bitrate ?: 0 }
                 ?: formats.firstOrNull()
                 ?: throw RuntimeException("Sin streams de audio disponibles en Invidious ($url)")
 
@@ -139,6 +142,7 @@ class InvidiousApiEngine : DownloadEngine {
             val totalBytes = response.headers["Content-Length"]?.toLongOrNull() ?: -1L
             var downloadedBytes = 0L
             val bufferSize = 8192
+            var lastEmitTime = 0L
 
             outputFile.parentFile?.mkdirs()
             FileOutputStream(outputFile).use { outputStream ->
@@ -149,9 +153,15 @@ class InvidiousApiEngine : DownloadEngine {
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
 
-                    if (totalBytes > 0) {
-                        val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
-                        emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitTime >= 300) {
+                        lastEmitTime = now
+                        if (totalBytes > 0) {
+                            val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
+                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                        } else {
+                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, -1f))
+                        }
                     }
                 }
             }

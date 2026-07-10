@@ -1,5 +1,6 @@
 package com.mp3downloader.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Cancel
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -23,6 +26,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -43,19 +47,19 @@ fun DownloadItem(
     val isCompleted = task.status == DownloadStatus.COMPLETED
     val isFailed = task.status == DownloadStatus.FAILED
 
+    val cardColor = when {
+        isCompleted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+        isFailed -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+        else -> MaterialTheme.colorScheme.surface
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = when {
-                isCompleted -> MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                isFailed -> MaterialTheme.colorScheme.error.copy(alpha = 0.1f)
-                else -> MaterialTheme.colorScheme.surfaceVariant
-            }
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = cardColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(
             modifier = Modifier
@@ -70,20 +74,21 @@ fun DownloadItem(
                     imageVector = statusIcon(task.status),
                     contentDescription = null,
                     tint = statusColor(task.status),
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(22.dp)
                 )
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(10.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = task.song.title,
                         style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    Spacer(modifier = Modifier.height(1.dp))
                     Text(
                         text = statusText(task.status),
                         style = MaterialTheme.typography.bodySmall,
@@ -94,56 +99,87 @@ fun DownloadItem(
                 if (isActive) {
                     Button(
                         onClick = onCancel,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                            containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
                             contentColor = MaterialTheme.colorScheme.error
                         ),
-                        contentPadding = ButtonDefaults.TextButtonContentPadding
+                        contentPadding = ButtonDefaults.TextButtonContentPadding,
+                        modifier = Modifier.height(32.dp)
                     ) {
-                        Text("Cancel", style = MaterialTheme.typography.labelSmall)
+                        Icon(
+                            Icons.Rounded.Cancel,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Cancelar", style = MaterialTheme.typography.labelSmall)
                     }
                 }
 
                 if (isCompleted && onOpenFolder != null) {
                     Button(
                         onClick = onOpenFolder,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                             contentColor = MaterialTheme.colorScheme.primary
                         ),
-                        contentPadding = ButtonDefaults.TextButtonContentPadding
+                        contentPadding = ButtonDefaults.TextButtonContentPadding,
+                        modifier = Modifier.height(32.dp)
                     ) {
-                        Text("Open", style = MaterialTheme.typography.labelSmall)
+                        Icon(
+                            Icons.Rounded.Visibility,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Abrir", style = MaterialTheme.typography.labelSmall)
                     }
                 }
 
                 if (isFailed && onRetry != null) {
                     Button(
                         onClick = onRetry,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                             contentColor = MaterialTheme.colorScheme.primary
                         ),
-                        contentPadding = ButtonDefaults.TextButtonContentPadding
+                        contentPadding = ButtonDefaults.TextButtonContentPadding,
+                        modifier = Modifier.height(32.dp)
                     ) {
-                        Text("Retry", style = MaterialTheme.typography.labelSmall)
+                        Icon(
+                            Icons.Rounded.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Reintentar", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
 
             if (task.status == DownloadStatus.DOWNLOADING) {
                 Spacer(modifier = Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { task.progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
+                if (task.progress < 0f) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        progress = { task.progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                }
             }
 
             if (isCompleted && task.outputPath != null) {
@@ -178,17 +214,18 @@ private fun statusIcon(status: DownloadStatus) = when (status) {
 }
 
 private fun statusText(status: DownloadStatus): String = when (status) {
-    DownloadStatus.IDLE -> "Idle"
-    DownloadStatus.QUEUED -> "Waiting..."
-    DownloadStatus.DOWNLOADING -> "Downloading..."
-    DownloadStatus.CONVERTING -> "Converting..."
-    DownloadStatus.COMPLETED -> "Completed"
-    DownloadStatus.FAILED -> "Failed"
+    DownloadStatus.IDLE -> "Inactivo"
+    DownloadStatus.QUEUED -> "En cola..."
+    DownloadStatus.DOWNLOADING -> "Descargando..."
+    DownloadStatus.CONVERTING -> "Convirtiendo..."
+    DownloadStatus.COMPLETED -> "Completado"
+    DownloadStatus.FAILED -> "Fallido"
 }
 
 @Composable
 private fun statusColor(status: DownloadStatus) = when (status) {
     DownloadStatus.COMPLETED -> MaterialTheme.colorScheme.primary
     DownloadStatus.FAILED -> MaterialTheme.colorScheme.error
+    DownloadStatus.QUEUED -> MaterialTheme.colorScheme.tertiary
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }

@@ -21,8 +21,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.FlowPreview
 
 enum class AppTab(val label: String) {
-    SEARCH("Search"),
-    DOWNLOADS("Downloads")
+    SEARCH("Buscar"),
+    DOWNLOADS("Descargas")
 }
 
 data class SnackbarEvent(
@@ -105,7 +105,7 @@ class MainViewModel(
             audioPreviewer.play(cachedUrl, onError = { errorMsg ->
                 viewModelScope.launch {
                     _previewingSongId.value = null
-                    showSnackbar("Playback error: $errorMsg")
+                    showSnackbar("Error de reproducción: $errorMsg")
                 }
             })
             _previewingSongId.value = song.id
@@ -125,7 +125,7 @@ class MainViewModel(
                             viewModelScope.launch {
                                 _previewingSongId.value = null
                                 _previewLoading.value = null
-                                showSnackbar("Playback error: $errorMsg")
+                                showSnackbar("Error de reproducción: $errorMsg")
                             }
                         },
                         onPlaying = {
@@ -136,7 +136,7 @@ class MainViewModel(
                 }
                 .onFailure { e ->
                     _previewLoading.value = null
-                    showSnackbar("Preview failed: ${e.message}")
+                    showSnackbar("Vista previa fallida: ${e.message}")
                 }
         }
     }
@@ -166,11 +166,11 @@ class MainViewModel(
                 .onSuccess { songs ->
                     _searchResults.value = songs
                     if (songs.isEmpty()) {
-                        showSnackbar("No results found for \"$query\"")
+                        showSnackbar("Sin resultados para \"$query\"")
                     }
                 }
                 .onFailure { e ->
-                    val msg = e.message ?: "Search failed"
+                    val msg = e.message ?: "Búsqueda fallida"
                     _searchError.value = msg
                     showSnackbar(
                         message = msg,
@@ -215,7 +215,7 @@ class MainViewModel(
                     updateTask(songId = result.songId, outputPath = publicPath ?: result.outputPath)
                     val finalPath = publicPath ?: result.outputPath
                     showSnackbar(
-                        message = "Downloaded: ${song.title}",
+                        message = "Descargado: ${song.title}",
                         actionLabel = "Abrir",
                         action = {
                             com.mp3downloader.domain.service.openInFileManager(finalPath)
@@ -223,9 +223,9 @@ class MainViewModel(
                         }
                     )
                 } else if (result.status == DownloadStatus.FAILED) {
-                    val errMsg = result.error ?: "Unknown error"
+                    val errMsg = result.error ?: "Error desconocido"
                     showSnackbar(
-                        message = "Download failed: $errMsg",
+                        message = "Descarga fallida: $errMsg",
                         actionLabel = "Copiar",
                         action = { com.mp3downloader.domain.service.copyTextToClipboard(errMsg) }
                     )
@@ -247,8 +247,8 @@ class MainViewModel(
     fun cancelDownload(songId: String) {
         viewModelScope.launch {
             repository.cancelDownload(songId)
-            updateTask(songId, status = DownloadStatus.FAILED, error = "Cancelled")
-            showSnackbar("Download cancelled")
+            updateTask(songId, status = DownloadStatus.FAILED, error = "Cancelado")
+            showSnackbar("Descarga cancelada")
         }
     }
 

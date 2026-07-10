@@ -106,9 +106,12 @@ class PipedApiEngine : DownloadEngine {
 
             val streamResponse = json.decodeFromString<PipedStreamResponse>(raw)
 
-            val bestAudio = streamResponse.audioStreams
+            val audioFormats = streamResponse.audioStreams
                 .filter { it.mimeType?.contains("mp4") == true || it.mimeType?.contains("m4a") == true }
-                .maxByOrNull { it.bitRate ?: 0 }
+            // Prefer moderate quality (~128kbps) to reduce file size, fall back to best
+            val bestAudio = audioFormats
+                .minByOrNull { kotlin.math.abs((it.bitRate ?: 0) - 128000) }
+                ?: audioFormats.maxByOrNull { it.bitRate ?: 0 }
                 ?: streamResponse.audioStreams.firstOrNull()
 
             if (bestAudio != null) return@runCatching bestAudio.url
@@ -157,6 +160,7 @@ class PipedApiEngine : DownloadEngine {
             val totalBytes = response.headers["Content-Length"]?.toLongOrNull() ?: -1L
             var downloadedBytes = 0L
             val bufferSize = 8192
+            var lastEmitTime = 0L
 
             outputFile.parentFile?.mkdirs()
             FileOutputStream(outputFile).use { outputStream ->
@@ -167,9 +171,15 @@ class PipedApiEngine : DownloadEngine {
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
 
-                    if (totalBytes > 0) {
-                        val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
-                        emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitTime >= 300) {
+                        lastEmitTime = now
+                        if (totalBytes > 0) {
+                            val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
+                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                        } else {
+                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, -1f))
+                        }
                     }
                 }
             }

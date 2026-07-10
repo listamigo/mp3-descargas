@@ -210,13 +210,18 @@ Verificación: [Cómo confirmamos que funciona]
 └── gradle.properties
 ```
 
-### Temas Disponibles
+### Temas Disponibles (Android/KMP)
 | Tema | Clave | Fondo | Acento | Paleta |
 |---|---|---|---|---|
-| Oscuro | `dark` | `#121212` | `#1DB954` verde neón |
-| Claro | `light` | `#FFFFFF` | `#1565C0` azul marino |
-| Vidrio | `glass` | transparente | `#CE93D8` / `#9C27B0` púrpura |
-| Sakura | `sakura` | `#FFF0F5` | `#E91E63` rosa |
+| Nocturno (default) | `DARK` | `#0D0D0D` | `#1DB954` verde Spotify |
+| Claro | `LIGHT` | `#F8FAFE` | `#1565C0` azul material |
+| Neón | `NEON` | `#0A0A14` | `#FF006E` rosa neón |
+| Medianoche | `MIDNIGHT` | `#0B0E17` | `#6C63FF` índigo |
+| Vidrio | `GLASS` | `#0E0E14` | `#CE93D8` púrpura |
+| Sakura | `SAKURA` | `#0E0A10` | `#E91E63` rosa |
+
+Todos los temas oscuros por defecto. Toggle modo claro/oscuro disponible en Configuración.
+Persistencia: SharedPreferences (Android) / JSON (Desktop) en `~/.mp3downloader/appearance.json`.
 
 ### Comandos de Build
 

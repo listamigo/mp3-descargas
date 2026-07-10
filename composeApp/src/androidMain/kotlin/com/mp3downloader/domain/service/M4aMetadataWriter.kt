@@ -15,7 +15,8 @@ object M4aMetadataWriter {
         filePath: String,
         title: String,
         artist: String,
-        thumbnailUrl: String?
+        thumbnailUrl: String?,
+        genre: String? = null
     ) {
         val file = File(filePath)
         if (!file.exists()) return
@@ -24,11 +25,10 @@ object M4aMetadataWriter {
             val mediaMeta = MetadataEditor.createFrom(file)
             val keyedMeta = mediaMeta.keyedMeta
 
-            // Set title and artist
             keyedMeta["\u00A9nam"] = MetaValue.createString(title)
             keyedMeta["\u00A9art"] = MetaValue.createString(artist)
+            keyedMeta["\u00A9gen"] = MetaValue.createString(genre ?: "YouTube Audio")
 
-            // Download and set cover art if thumbnail URL is available
             if (!thumbnailUrl.isNullOrBlank()) {
                 try {
                     val imageBytes = URL(thumbnailUrl).readBytes()
@@ -39,7 +39,6 @@ object M4aMetadataWriter {
                 }
             }
 
-            // Save changes (false = safe mode, rewrites header properly)
             mediaMeta.save(false)
         } catch (e: Exception) {
             android.util.Log.e("M4aMetadataWriter", "Failed to write metadata: ${e.message}")

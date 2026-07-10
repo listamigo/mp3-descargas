@@ -1,6 +1,7 @@
 package com.mp3downloader.ui.components
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,6 +13,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 
@@ -26,20 +30,31 @@ fun ThumbnailImage(
             bitmap = bitmap,
             contentDescription = null,
             modifier = modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(4.dp)),
+                .size(52.dp)
+                .shadow(4.dp, RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(10.dp)),
             contentScale = ContentScale.Crop
         )
     } else {
         Box(
-            modifier = modifier.size(48.dp),
+            modifier = modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                        )
+                    )
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Rounded.MusicNote,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(28.dp)
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                modifier = Modifier.size(26.dp)
             )
         }
     }

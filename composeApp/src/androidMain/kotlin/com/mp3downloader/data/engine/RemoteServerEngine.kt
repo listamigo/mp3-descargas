@@ -125,6 +125,7 @@ class RemoteServerEngine : DownloadEngine {
             val totalBytes = connection.contentLengthLong
             var downloadedBytes = 0L
             val bufferSize = 8192
+            var lastEmitTime = 0L
 
             outputFile.parentFile?.mkdirs()
             FileOutputStream(outputFile).use { outputStream ->
@@ -135,9 +136,15 @@ class RemoteServerEngine : DownloadEngine {
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
 
-                    if (totalBytes > 0) {
-                        val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
-                        emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitTime >= 300) {
+                        lastEmitTime = now
+                        if (totalBytes > 0) {
+                            val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
+                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                        } else {
+                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, -1f))
+                        }
                     }
                 }
             }
@@ -155,6 +162,16 @@ class RemoteServerEngine : DownloadEngine {
                     error = "Error: archivo demasiado pequeño ($downloadedBytes bytes). Puede que YouTube haya bloqueado la descarga."))
                 outputFile.delete()
             } else {
+                // Embed metadata (title, artist, cover art) into the M4A file
+                try {
+                    com.mp3downloader.domain.service.M4aMetadataWriter.writeMetadata(
+                        filePath = outputFile.absolutePath,
+                        title = song.title,
+                        artist = song.artist,
+                        thumbnailUrl = song.thumbnailUrl.takeIf { it.isNotBlank() }
+                    )
+                } catch (_: Exception) {}
+
                 emit(DownloadResult(
                     songId = song.id,
                     status = DownloadStatus.COMPLETED,

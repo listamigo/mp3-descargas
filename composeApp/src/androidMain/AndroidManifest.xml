@@ -19,7 +19,7 @@
         android:name=".Mp3DownloaderApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="MP3 Downloader"
+        android:label="Descargas Mp3"
         android:supportsRtl="true"
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true"
