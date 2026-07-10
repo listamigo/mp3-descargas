@@ -256,7 +256,7 @@ class APIHandler(BaseHTTPRequestHandler):
             from download_engine import _base_cmd
 
             cmd = _base_cmd() + [
-                "-f", "best",
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
                 "-o", "-",
                 "--no-playlist",
                 "--no-part",      # no crear archivos temporales
