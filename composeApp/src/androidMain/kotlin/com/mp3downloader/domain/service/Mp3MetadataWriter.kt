@@ -26,16 +26,12 @@ object Mp3MetadataWriter {
         android.util.Log.i(TAG, "Title=$title, Artist=$artist, Genre=$genre, Thumb=$thumbnailUrl")
 
         try {
-            // Verify it's a valid MP3 by checking first bytes
+            // Check header: FF FB/FF F3 = MPEG sync, 49 44 33 = "ID3" (valid with existing tags)
             val header = ByteArray(3)
             file.inputStream().use { it.read(header) }
-            val isMp3 = header[0] == 0xFF.toByte() && (header[1].toInt() and 0xE0) == 0xE0
-            if (!isMp3) {
-                android.util.Log.e(TAG, "File is NOT a valid MP3 (header: ${header.joinToString(" ") { "%02X".format(it) }})")
-                // Try to write anyway - mp3agic might handle it
-            } else {
-                android.util.Log.i(TAG, "File header confirms valid MP3")
-            }
+            val hasMpegSync = header[0] == 0xFF.toByte() && (header[1].toInt() and 0xE0) == 0xE0
+            val hasId3Tag = header[0] == 0x49.toByte() && header[1] == 0x44.toByte() && header[2] == 0x33.toByte()
+            android.util.Log.i(TAG, "Header: ${header.joinToString(" ") { "%02X".format(it) }} (MPEG=$hasMpegSync, ID3=$hasId3Tag)")
 
             val mp3File = Mp3File(file)
             val tag = ID3v24Tag()
@@ -63,12 +59,19 @@ object Mp3MetadataWriter {
             }
 
             mp3File.id3v2Tag = tag
-            mp3File.save(file.absolutePath)
-            android.util.Log.i(TAG, "MP3 metadata saved successfully")
 
-            // Verify the file was written
-            val verifyFile = File(file.absolutePath)
-            android.util.Log.i(TAG, "File after save: ${verifyFile.length()} bytes")
+            // mp3agic requires saving to a different filename, then rename
+            val tmpFile = File(file.parentFile, "${file.nameWithoutExtension}_tmp.mp3")
+            mp3File.save(tmpFile.absolutePath)
+            android.util.Log.i(TAG, "Saved to temp: ${tmpFile.length()} bytes")
+
+            // Replace original with tagged version
+            if (file.delete() && tmpFile.renameTo(file)) {
+                android.util.Log.i(TAG, "MP3 metadata saved successfully (${file.length()} bytes)")
+            } else {
+                android.util.Log.e(TAG, "Failed to replace original file")
+                tmpFile.delete()
+            }
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Failed to write MP3 metadata: ${e.message}", e)
         }
