@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- music note head -->
+    <path
+        android:fillColor="#1DB954"
+        android:pathData="M44,56 m-12,0 a12,10 0,1 0,24 0 a12,10 0,1 0,-24 0" />
+    <!-- music note stem -->
+    <path
+        android:fillColor="#1DB954"
+        android:pathData="M56,56 L56,24 L68,28 L68,32 L58,29 L58,56" />
+    <!-- download arrow -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,72 L44,62 L48,62 L48,50 L60,50 L60,62 L64,62 Z" />
+    <!-- arrow line -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,86 L66,86"
+        android:strokeWidth="3"
+        android:strokeLineCap="round" />
+</vector>

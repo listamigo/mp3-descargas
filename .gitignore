@@ -1,0 +1,45 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Android
+local.properties
+
+# Kotlin
+*.class
+.kotlin/
+
+# OS
+Thumbs.db
+
+# Build outputs
+/composeApp/build/
+/out/
+
+# Python
+desktop/venv/
+__pycache__/
+*.pyc
+desktop/dist/
+desktop/build/
+
+# Server logs
+*.log
+
+# Docker
+dockerpaid.png
+railway.png
+
+# Token/secret files
+token github
+
+# Large binaries
+*.deb
+desktop/dist/
+token github

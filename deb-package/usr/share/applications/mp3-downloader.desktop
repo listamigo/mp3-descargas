@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=MP3 Downloader
+Comment=Download YouTube audio as MP3
+Exec=/usr/bin/mp3-downloader
+Icon=mp3-downloader
+Terminal=false
+Type=Application
+Categories=Audio;Music;
