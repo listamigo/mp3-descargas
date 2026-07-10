@@ -102,16 +102,13 @@ class InvidiousApiEngine : DownloadEngine {
             val video = json.decodeFromString<InvidiousVideoResponse>(raw)
 
             val formats = video.adaptiveFormats ?: video.formatStreams ?: emptyList()
-            val audioFormats = formats
+            val bestAudio = formats
                 .filter {
                     (it.type?.contains("audio/mp4") == true) ||
                     (it.mimeType?.contains("audio/mp4") == true) ||
                     (it.type?.contains("m4a") == true)
                 }
-            // Prefer moderate quality (~128kbps) to reduce file size, fall back to best
-            val bestAudio = audioFormats
-                .minByOrNull { kotlin.math.abs((it.bitrate ?: 0) - 128000) }
-                ?: audioFormats.maxByOrNull { it.bitrate ?: 0 }
+                .maxByOrNull { it.bitrate ?: 0 }
                 ?: formats.firstOrNull()
                 ?: throw RuntimeException("Sin streams de audio disponibles en Invidious ($url)")
 

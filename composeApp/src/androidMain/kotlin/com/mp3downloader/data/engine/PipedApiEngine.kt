@@ -106,12 +106,9 @@ class PipedApiEngine : DownloadEngine {
 
             val streamResponse = json.decodeFromString<PipedStreamResponse>(raw)
 
-            val audioFormats = streamResponse.audioStreams
+            val bestAudio = streamResponse.audioStreams
                 .filter { it.mimeType?.contains("mp4") == true || it.mimeType?.contains("m4a") == true }
-            // Prefer moderate quality (~128kbps) to reduce file size, fall back to best
-            val bestAudio = audioFormats
-                .minByOrNull { kotlin.math.abs((it.bitRate ?: 0) - 128000) }
-                ?: audioFormats.maxByOrNull { it.bitRate ?: 0 }
+                .maxByOrNull { it.bitRate ?: 0 }
                 ?: streamResponse.audioStreams.firstOrNull()
 
             if (bestAudio != null) return@runCatching bestAudio.url
