@@ -184,6 +184,11 @@ class MainViewModel(
     }
 
     fun download(song: Song) {
+        val alreadyActive = _downloads.value.any {
+            it.song.id == song.id && (it.status == DownloadStatus.QUEUED || it.status == DownloadStatus.DOWNLOADING)
+        }
+        if (alreadyActive) return
+
         viewModelScope.launch {
             val task = DownloadTask(song = song, status = DownloadStatus.QUEUED)
             _downloads.value = _downloads.value + task
