@@ -25,7 +25,7 @@ COPY --chown=user:user server/server.py .
 COPY --chown=user:user server/download_engine.py .
 COPY --chown=user:user server/models/ ./models/
 COPY --chown=user:user server/utils/ ./utils/
-RUN echo "Build ${CACHE_BUST}" > /app/.build_id
+RUN echo "Build ${CACHE_BUST}" > .build_id
 
 # ─── Directorios de datos con permisos para usuario no-root ─
 RUN mkdir -p /data/cookies /data/logs && chown -R user:user /data
