@@ -1,16 +1,52 @@
-FROM python:3.13-slim
+# ============================================================
+# Dockerfile para Hugging Face Spaces
+# MP3 Downloader Server — 100% gratis, 24/7, sin tarjeta
+# ============================================================
+# Uso en Hugging Face:
+#   1. Crea un Space nuevo → SDK: Docker
+#   2. Sube estos archivos (server.py, download_engine.py, models/, utils/, Dockerfile)
+#   3. El Space se construye solo y arranca el servidor
+# ============================================================
 
+FROM python:3.11-slim
+
+# ─── Instalar dependencias del sistema (sin curl, no se usa) ─
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir yt-dlp
+# ─── Crear usuario no-root (requisito de HF Spaces) ────────
+RUN useradd -m -u 1000 user
+WORKDIR /home/user/app
 
-WORKDIR /app
-COPY . .
+# ─── Copiar código fuente ──────────────────────────────────
+COPY --chown=user:user server.py .
+COPY --chown=user:user download_engine.py .
+COPY --chown=user:user models/ ./models/
+COPY --chown=user:user utils/ ./utils/
 
-# Directory for YouTube cookies (mounted as volume or created at runtime)
-RUN mkdir -p /app/cookies
+# ─── Directorios de datos (usando /data que es persistente) ─
+RUN mkdir -p /data/cookies /data/logs && \
+    chmod 755 /data/cookies /data/logs && \
+    ln -s /data/cookies /opt/mp3downloader/cookies && \
+    ln -s /data/logs /opt/mp3downloader/logs
 
-EXPOSE 8899
+# ─── Instalar yt-dlp (última versión) ──────────────────────
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir yt-dlp
+
+# ─── Puerto que expone Hugging Face (por defecto 7860) ─────
+ENV PORT=7860
+ENV HOST=0.0.0.0
+ENV COOKIES_FILE=/data/cookies/cookies.txt
+ENV LOG_DIR=/data/logs
+ENV LOG_LEVEL=INFO
+
+# ─── Puerto del contenedor ─────────────────────────────────
+EXPOSE 7860
+
+# ─── Cambiar al usuario no-root ────────────────────────────
+USER user
+
+# ─── Ejecutar servidor ─────────────────────────────────────
 CMD ["python", "server.py"]

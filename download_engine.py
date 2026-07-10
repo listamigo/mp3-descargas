@@ -12,7 +12,12 @@ from models.song import DownloadStatus, DownloadTask, Song
 from utils.helpers import sanitize_filename
 
 YTDLP_TIMEOUT = 60
-COOKIES_FILE = "/app/cookies/cookies.txt"
+
+# Ruta del archivo de cookies — configurable via env var
+COOKIES_FILE = os.environ.get(
+    "COOKIES_FILE",
+    "/opt/mp3downloader/cookies/cookies.txt"
+)
 
 
 def _base_cmd() -> list[str]:
