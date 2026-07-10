@@ -253,78 +253,76 @@ class APIHandler(BaseHTTPRequestHandler):
         yt_url = f"https://youtube.com/watch?v={video_id}"
 
         try:
-            from download_engine import _base_cmd
+            from download_engine import _base_cmd, PLAYER_CLIENTS
 
-            cmd = _base_cmd() + [
-                "-f", "bestaudio[ext=m4a]/bestaudio/best",
-                "-o", "-",
-                "--no-playlist",
-                "--no-part",      # no crear archivos temporales
-                "--buffer-size",  "4096",
-                yt_url,
-            ]
+            last_err = ""
+            for client in PLAYER_CLIENTS:
+                cmd = _base_cmd(client) + [
+                    "-f", "best",
+                    "-o", "-",
+                    "--no-playlist",
+                    "--no-part",
+                    "--buffer-size",  "4096",
+                    yt_url,
+                ]
 
-            # Limitar tiempo de proceso hijo
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=lambda: _signal.signal(_signal.SIGALRM, lambda *_: (_signal.alarm(0), os._exit(1))),
-            )
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    preexec_fn=lambda: _signal.signal(_signal.SIGALRM, lambda *_: (_signal.alarm(0), os._exit(1))),
+                )
 
-            # Esperar primeros datos (máx 60s para cold start)
-            ready = _select.select([proc.stdout], [], [], 60.0)
-            if not ready[0]:
-                proc.kill()
-                _, stderr = proc.communicate(timeout=5)
-                err = stderr.decode(errors="replace")[:300]
-                logger.error(f"yt-dlp timeout para {video_id}")
-                self._json(504, {"error": f"yt-dlp timed out. Stderr: {err}"})
-                return
+                ready = _select.select([proc.stdout], [], [], 30.0)
+                if not ready[0]:
+                    proc.kill()
+                    _, stderr = proc.communicate(timeout=5)
+                    last_err = stderr.decode(errors="replace")[:300]
+                    logger.warning(f"yt-dlp timeout para {video_id} con client={client}")
+                    continue
 
-            first_chunk = proc.stdout.read(8192)
-            if not first_chunk:
-                proc.kill()
-                _, stderr = proc.communicate(timeout=5)
-                err = stderr.decode(errors="replace")[:300]
-                logger.error(f"yt-dlp sin output para {video_id} (stderr: {err})")
-                self._json(502, {"error": f"yt-dlp no output. Stderr: {err}"})
-                return
+                first_chunk = proc.stdout.read(8192)
+                if not first_chunk:
+                    proc.kill()
+                    _, stderr = proc.communicate(timeout=5)
+                    last_err = stderr.decode(errors="replace")[:300]
+                    logger.warning(f"yt-dlp sin output para {video_id} con client={client}")
+                    continue
 
-            # Respuesta 200 — streaming
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/mp4")
-            self._cors_headers()
-            self.send_header("Connection", "close")
-            self.send_header("X-Video-Id", video_id)
-            self.end_headers()
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mp4")
+                self._cors_headers()
+                self.send_header("Connection", "close")
+                self.send_header("X-Video-Id", video_id)
+                self.end_headers()
 
-            # Enviar datos en streaming
-            self.wfile.write(first_chunk)
-            self.wfile.flush()
-
-            sent = len(first_chunk)
-            while True:
-                chunk = proc.stdout.read(8192)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+                self.wfile.write(first_chunk)
                 self.wfile.flush()
-                sent += len(chunk)
 
-            proc.stdout.close()
-            proc.wait(timeout=10)
+                sent = len(first_chunk)
+                while True:
+                    chunk = proc.stdout.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    sent += len(chunk)
 
-            if proc.returncode != 0:
-                err = proc.stderr.read().decode(errors="replace")[:200]
-                logger.warning(f"yt-dlp exit code {proc.returncode} para {video_id}: {err}")
-            else:
-                logger.info(f"Descarga completada: {video_id} ({sent} bytes)")
+                proc.stdout.close()
+                proc.wait(timeout=10)
 
-            proc.stderr.close()
+                if proc.returncode != 0:
+                    err = proc.stderr.read().decode(errors="replace")[:200]
+                    logger.warning(f"yt-dlp exit code {proc.returncode} para {video_id}: {err}")
+                else:
+                    logger.info(f"Descarga completada: {video_id} ({sent} bytes)")
+
+                proc.stderr.close()
+                return
+
+            self._json(502, {"error": f"yt-dlp no output. Stderr: {last_err}"})
 
         except BrokenPipeError:
-            # El cliente Android cerró la conexión — es normal
             logger.debug(f"Cliente desconectado durante descarga de {video_id}")
         except Exception as e:
             logger.error(f"Error en proxy download para {video_id}: {e}")
