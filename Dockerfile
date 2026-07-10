@@ -25,11 +25,8 @@ COPY --chown=user:user download_engine.py .
 COPY --chown=user:user models/ ./models/
 COPY --chown=user:user utils/ ./utils/
 
-# ─── Directorios de datos (usando /data que es persistente) ─
-RUN mkdir -p /data/cookies /data/logs && \
-    chmod 755 /data/cookies /data/logs && \
-    ln -s /data/cookies /opt/mp3downloader/cookies && \
-    ln -s /data/logs /opt/mp3downloader/logs
+# ─── Directorios de datos con permisos para usuario no-root ─
+RUN mkdir -p /data/cookies /data/logs && chown -R user:user /data
 
 # ─── Instalar yt-dlp (última versión) ──────────────────────
 RUN pip install --no-cache-dir --upgrade pip && \
