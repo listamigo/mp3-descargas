@@ -2,6 +2,7 @@ package com.mp3downloader.domain.service
 
 import android.util.Log
 import org.mp4parser.IsoFile
+import org.mp4parser.PropertyBoxParserImpl
 import org.mp4parser.boxes.apple.AppleCoverBox
 import org.mp4parser.boxes.apple.AppleGenreBox
 import org.mp4parser.boxes.apple.AppleItemListBox
@@ -9,13 +10,28 @@ import org.mp4parser.boxes.apple.AppleNameBox
 import org.mp4parser.boxes.apple.AppleArtistBox
 import org.mp4parser.boxes.iso14496.part12.UserDataBox
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.channels.Channels
+import java.util.Properties
 
 object M4aMetadataWriter {
 
     private const val TAG = "M4aMetadataWriter"
+
+    private var cachedParser: PropertyBoxParserImpl? = null
+
+    private fun getParser(): PropertyBoxParserImpl {
+        cachedParser?.let { return it }
+        val context = com.mp3downloader.Mp3DownloaderApp.instance
+        val props = Properties()
+        context.assets.open("isoparser2-default.properties").use { props.load(it) }
+        val parser = PropertyBoxParserImpl(props)
+        cachedParser = parser
+        return parser
+    }
 
     fun writeMetadata(
         filePath: String,
@@ -63,39 +79,34 @@ object M4aMetadataWriter {
     ) {
         var isoFile: IsoFile? = null
         try {
-            isoFile = IsoFile(file.absolutePath)
+            val parser = getParser()
+            val channel = Channels.newChannel(FileInputStream(file))
+            isoFile = IsoFile(channel, parser)
+
             val moovBox = isoFile.movieBox
                 ?: throw IllegalStateException("No moov box found — file may not be a valid M4A/MP4 container")
 
             Log.d(TAG, "moov box found, children: ${moovBox.boxes.size}")
 
-            // Get or create udta box
             val udtaBoxes = moovBox.getBoxes(UserDataBox::class.java)
             val udtaBox = if (udtaBoxes.isNotEmpty()) {
-                Log.d(TAG, "Existing UserDataBox found")
                 udtaBoxes[0]
             } else {
-                Log.d(TAG, "Creating new UserDataBox")
                 UserDataBox().also { moovBox.addBox(it) }
             }
 
-            // Get or create ilst (Apple item list) box
             val ilstBoxes = udtaBox.getBoxes(AppleItemListBox::class.java)
             val ilstBox = if (ilstBoxes.isNotEmpty()) {
-                Log.d(TAG, "Existing AppleItemListBox found")
                 ilstBoxes[0]
             } else {
-                Log.d(TAG, "Creating new AppleItemListBox")
                 AppleItemListBox().also { udtaBox.addBox(it) }
             }
 
-            // Title
             val nameBox = AppleNameBox()
             nameBox.setValue(title)
             ilstBox.addBox(nameBox)
             Log.d(TAG, "Added title: $title")
 
-            // Artist
             if (artist.isNotBlank()) {
                 val artistBox = AppleArtistBox()
                 artistBox.setValue(artist)
@@ -103,14 +114,12 @@ object M4aMetadataWriter {
                 Log.d(TAG, "Added artist: $artist")
             }
 
-            // Genre
             val genreText = if (!genre.isNullOrBlank()) genre else "YouTube Audio"
             val genreBox = AppleGenreBox()
             genreBox.setValue(genreText)
             ilstBox.addBox(genreBox)
             Log.d(TAG, "Added genre: $genreText")
 
-            // Cover art
             if (!thumbnailUrl.isNullOrBlank()) {
                 try {
                     Log.d(TAG, "Downloading cover art from: $thumbnailUrl")
@@ -135,7 +144,6 @@ object M4aMetadataWriter {
                 Log.d(TAG, "No thumbnail URL, skipping cover art")
             }
 
-            // Write file atomically
             saveFile(file, isoFile)
             Log.i(TAG, "M4A metadata written successfully to ${file.name}")
         } catch (e: Exception) {
@@ -155,7 +163,7 @@ object M4aMetadataWriter {
 
             val tempSize = tempFile.length()
             if (tempSize < 1024) {
-                throw IllegalStateException("Metadata output too small ($tempSize bytes), aborting to prevent data loss")
+                throw IllegalStateException("Metadata output too small ($tempSize bytes), aborting")
             }
 
             if (!file.delete()) {
