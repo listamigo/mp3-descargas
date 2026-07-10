@@ -38,6 +38,9 @@ railway.png
 
 # Token/secret files
 token github
+cookies.txt
+*.cookies
+*.cookies.txt
 
 # Large binaries
 *.deb

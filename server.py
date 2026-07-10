@@ -34,7 +34,7 @@ from download_engine import DownloadEngine, COOKIES_FILE
 
 PORT = int(os.environ.get("PORT", 8899))
 HOST = os.environ.get("HOST", "0.0.0.0")
-COOKIES_FILE = os.environ.get("COOKIES_FILE", "/opt/mp3downloader/cookies/cookies.txt")
+COOKIES_FILE = os.environ.get("COOKIES_FILE", os.path.expanduser("~/.mp3downloader/cookies/cookies.txt"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 LOG_DIR = os.environ.get("LOG_DIR", "/opt/mp3downloader/logs")
 LOG_FILE = os.environ.get("LOG_FILE", os.path.join(LOG_DIR, "server.log"))

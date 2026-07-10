@@ -16,7 +16,7 @@ YTDLP_TIMEOUT = 60
 # Ruta del archivo de cookies — configurable via env var
 COOKIES_FILE = os.environ.get(
     "COOKIES_FILE",
-    "/opt/mp3downloader/cookies/cookies.txt"
+    os.path.expanduser("~/.mp3downloader/cookies/cookies.txt")
 )
 
 
