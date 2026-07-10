@@ -10,6 +10,7 @@ kotlinx-serialization = "1.7.1"
 androidx-activityCompose = "1.9.1"
 androidx-lifecycle = "2.8.4"
 jcodec = "0.2.5"
+mp3agic = "0.9.1"
 
 [libraries]
 # Koin DI
@@ -40,6 +41,9 @@ kotlinx-lifecycle-runtime = { group = "org.jetbrains.androidx.lifecycle", name =
 # JCodec - MP4/M4A metadata editing
 jcodec = { group = "org.jcodec", name = "jcodec", version.ref = "jcodec" }
 jcodec-android = { group = "org.jcodec", name = "jcodec-android", version.ref = "jcodec" }
+
+# mp3agic - MP3 ID3 tag editing
+mp3agic = { group = "com.mpatric", name = "mp3agic", version.ref = "mp3agic" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

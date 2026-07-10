@@ -8,8 +8,8 @@ import java.net.URL
 object M4aMetadataWriter {
 
     /**
-     * Writes metadata (title, artist, cover art) into an M4A audio file.
-     * Uses JCodec's MetadataEditor which handles MP4 box structure safely.
+     * Auto-detects file format and writes metadata accordingly.
+     * MP3 → Mp3MetadataWriter (ID3v2), M4A/MP4 → JCodec (MP4 boxes).
      */
     fun writeMetadata(
         filePath: String,
@@ -21,6 +21,32 @@ object M4aMetadataWriter {
         val file = File(filePath)
         if (!file.exists()) return
 
+        val ext = file.extension.lowercase()
+        when (ext) {
+            "mp3" -> {
+                Mp3MetadataWriter.writeMetadata(filePath, title, artist, thumbnailUrl, genre)
+            }
+            "m4a", "mp4", "m4b" -> {
+                writeM4aMetadata(file, title, artist, thumbnailUrl, genre)
+            }
+            else -> {
+                // Try M4A first, fallback to MP3
+                try {
+                    writeM4aMetadata(file, title, artist, thumbnailUrl, genre)
+                } catch (_: Exception) {
+                    Mp3MetadataWriter.writeMetadata(filePath, title, artist, thumbnailUrl, genre)
+                }
+            }
+        }
+    }
+
+    private fun writeM4aMetadata(
+        file: File,
+        title: String,
+        artist: String,
+        thumbnailUrl: String?,
+        genre: String?
+    ) {
         try {
             val mediaMeta = MetadataEditor.createFrom(file)
             val keyedMeta = mediaMeta.keyedMeta
@@ -41,38 +67,7 @@ object M4aMetadataWriter {
 
             mediaMeta.save(false)
         } catch (e: Exception) {
-            android.util.Log.e("M4aMetadataWriter", "Failed to write metadata: ${e.message}")
-        }
-    }
-
-    /**
-     * Writes metadata including pre-downloaded thumbnail bytes.
-     * Use this when you already have the image bytes.
-     */
-    fun writeMetadataWithImageBytes(
-        filePath: String,
-        title: String,
-        artist: String,
-        imageBytes: ByteArray?
-    ) {
-        val file = File(filePath)
-        if (!file.exists()) return
-
-        try {
-            val mediaMeta = MetadataEditor.createFrom(file)
-            val keyedMeta = mediaMeta.keyedMeta
-
-            keyedMeta["\u00A9nam"] = MetaValue.createString(title)
-            keyedMeta["\u00A9art"] = MetaValue.createString(artist)
-
-            if (imageBytes != null && imageBytes.isNotEmpty()) {
-                val imageType = detectImageType(imageBytes)
-                keyedMeta["covr"] = MetaValue.createOther(imageType, imageBytes)
-            }
-
-            mediaMeta.save(false)
-        } catch (e: Exception) {
-            android.util.Log.e("M4aMetadataWriter", "Failed to write metadata: ${e.message}")
+            android.util.Log.e("M4aMetadataWriter", "Failed to write M4A metadata: ${e.message}")
         }
     }
 

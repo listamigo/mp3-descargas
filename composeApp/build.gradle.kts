@@ -51,6 +51,7 @@ kotlin {
             implementation(libs.androidx.activity.compose)
             implementation(libs.jcodec)
             implementation(libs.jcodec.android)
+            implementation(libs.mp3agic)
         }
 
         desktopMain.dependencies {
