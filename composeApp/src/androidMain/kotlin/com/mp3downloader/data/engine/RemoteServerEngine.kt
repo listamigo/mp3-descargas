@@ -162,15 +162,18 @@ class RemoteServerEngine : DownloadEngine {
                     error = "Error: archivo demasiado pequeño ($downloadedBytes bytes). Puede que YouTube haya bloqueado la descarga."))
                 outputFile.delete()
             } else {
-                // Embed metadata (title, artist, cover art) into the M4A file
+                // Embed metadata (title, artist, cover art) into the audio file
                 try {
+                    android.util.Log.i("RemoteServerEngine", "Embedding metadata: title=${song.title}, artist=${song.artist}, thumb=${song.thumbnailUrl}")
                     com.mp3downloader.domain.service.M4aMetadataWriter.writeMetadata(
                         filePath = outputFile.absolutePath,
                         title = song.title,
                         artist = song.artist,
                         thumbnailUrl = song.thumbnailUrl.takeIf { it.isNotBlank() }
                     )
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    android.util.Log.e("RemoteServerEngine", "Metadata embedding failed: ${e.message}", e)
+                }
 
                 emit(DownloadResult(
                     songId = song.id,

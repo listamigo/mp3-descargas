@@ -7,10 +7,8 @@ import java.net.URL
 
 object M4aMetadataWriter {
 
-    /**
-     * Auto-detects file format and writes metadata accordingly.
-     * MP3 → Mp3MetadataWriter (ID3v2), M4A/MP4 → JCodec (MP4 boxes).
-     */
+    private const val TAG = "M4aMetadataWriter"
+
     fun writeMetadata(
         filePath: String,
         title: String,
@@ -19,21 +17,29 @@ object M4aMetadataWriter {
         genre: String? = null
     ) {
         val file = File(filePath)
-        if (!file.exists()) return
+        if (!file.exists()) {
+            android.util.Log.e(TAG, "File does not exist: $filePath")
+            return
+        }
 
         val ext = file.extension.lowercase()
+        android.util.Log.i(TAG, "Detected format: .$ext for file: $filePath")
+
         when (ext) {
             "mp3" -> {
+                android.util.Log.i(TAG, "Dispatching to Mp3MetadataWriter")
                 Mp3MetadataWriter.writeMetadata(filePath, title, artist, thumbnailUrl, genre)
             }
             "m4a", "mp4", "m4b" -> {
+                android.util.Log.i(TAG, "Dispatching to JCodec for M4A/MP4")
                 writeM4aMetadata(file, title, artist, thumbnailUrl, genre)
             }
             else -> {
-                // Try M4A first, fallback to MP3
+                android.util.Log.w(TAG, "Unknown format '.$ext', trying M4A then MP3")
                 try {
                     writeM4aMetadata(file, title, artist, thumbnailUrl, genre)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "M4A failed, trying MP3: ${e.message}")
                     Mp3MetadataWriter.writeMetadata(filePath, title, artist, thumbnailUrl, genre)
                 }
             }
@@ -61,13 +67,15 @@ object M4aMetadataWriter {
                     val imageType = detectImageType(imageBytes)
                     keyedMeta["covr"] = MetaValue.createOther(imageType, imageBytes)
                 } catch (e: Exception) {
-                    android.util.Log.w("M4aMetadataWriter", "Failed to download/embed cover art: ${e.message}")
+                    android.util.Log.w(TAG, "Failed to download/embed cover art: ${e.message}")
                 }
             }
 
             mediaMeta.save(false)
+            android.util.Log.i(TAG, "M4A metadata saved successfully")
         } catch (e: Exception) {
-            android.util.Log.e("M4aMetadataWriter", "Failed to write M4A metadata: ${e.message}")
+            android.util.Log.e(TAG, "Failed to write M4A metadata: ${e.message}")
+            throw e
         }
     }
 
