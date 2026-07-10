@@ -262,42 +262,32 @@ class APIHandler(BaseHTTPRequestHandler):
             last_err = ""
             downloaded = False
 
-            # Step 1: Download via yt-dlp with format fallbacks
-            format_attempts = [
-                "bestaudio[ext=m4a]",
-                "bestaudio[ext=webm]",
-                "bestaudio",
-                "best",
-            ]
-
+            # Step 1: Download via yt-dlp (-f best always works)
             for client in PLAYER_CLIENTS:
                 if downloaded:
                     break
-                for fmt in format_attempts:
-                    if downloaded:
-                        break
-                    cmd = _base_cmd(client) + [
-                        "-f", fmt,
-                        "-o", tmp_m4a,
-                        "--no-playlist",
-                        "--no-part",
-                        yt_url,
-                    ]
+                cmd = _base_cmd(client) + [
+                    "-f", "best",
+                    "-o", tmp_m4a,
+                    "--no-playlist",
+                    "--no-part",
+                    yt_url,
+                ]
 
-                    try:
-                        proc = subprocess.Popen(
-                            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                        )
-                        _, stderr = proc.communicate(timeout=120)
-                        if proc.returncode == 0 and os.path.isfile(tmp_m4a) and os.path.getsize(tmp_m4a) > 1024:
-                            downloaded = True
-                        else:
-                            last_err = stderr.decode(errors="replace")[:300]
-                            for f in [tmp_m4a, tmp_mp3]:
-                                if os.path.isfile(f):
-                                    os.remove(f)
-                    except Exception as e:
-                        last_err = str(e)[:300]
+                try:
+                    proc = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    _, stderr = proc.communicate(timeout=120)
+                    if proc.returncode == 0 and os.path.isfile(tmp_m4a) and os.path.getsize(tmp_m4a) > 1024:
+                        downloaded = True
+                    else:
+                        last_err = stderr.decode(errors="replace")[:300]
+                        for f in [tmp_m4a, tmp_mp3]:
+                            if os.path.isfile(f):
+                                os.remove(f)
+                except Exception as e:
+                    last_err = str(e)[:300]
 
             if not downloaded:
                 self._json(502, {"error": f"yt-dlp failed: {last_err}"})

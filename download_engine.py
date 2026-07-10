@@ -60,7 +60,7 @@ class DownloadEngine:
     def get_audio_url(self, song: Song) -> str:
         url = f"https://youtube.com/watch?v={song.id}"
         cmd = _base_cmd() + [
-            "-f", "bestaudio[ext=m4a]/bestaudio/best",
+            "-f", "best",
             "--get-url", url
         ]
         result = subprocess.run(
