@@ -6,7 +6,7 @@ import com.mp3downloader.domain.model.Song
 import kotlinx.coroutines.flow.Flow
 
 interface SongRepository {
-    suspend fun search(query: String): Result<List<Song>>
+    suspend fun search(query: String, offset: Int = 0): Result<List<Song>>
     suspend fun getAudioUrl(song: Song): Result<String>
     fun download(song: Song, outputDir: String): Flow<DownloadResult>
     suspend fun cancelDownload(songId: String)

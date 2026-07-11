@@ -12,8 +12,11 @@ data class DownloadResult(
     val error: String? = null
 )
 
+/** Number of results requested per search page. */
+const val SEARCH_PAGE_SIZE: Int = 20
+
 interface DownloadEngine {
-    suspend fun search(query: String): Result<List<Song>>
+    suspend fun search(query: String, offset: Int = 0): Result<List<Song>>
     suspend fun getAudioStreamUrl(song: Song): Result<String>
     fun download(song: Song, outputDir: String): Flow<DownloadResult>
     suspend fun cancel(songId: String)

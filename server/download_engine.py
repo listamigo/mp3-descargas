@@ -59,10 +59,13 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
 
 class DownloadEngine:
 
-    def search(self, query: str, max_results: int = 20) -> List[Song]:
+    def search(self, query: str, max_results: int = 20, offset: int = 0) -> List[Song]:
+        # yt-dlp has no native offset, so we request up to (offset + max_results)
+        # and slice out the page we need.
+        total = max_results + max(offset, 0)
         cmd = _base_cmd() + [
             "--flat-playlist", "--dump-json",
-            f"ytsearch{max_results}:{query}"
+            f"ytsearch{total}:{query}"
         ]
         result = subprocess.run(
             cmd,
@@ -84,7 +87,7 @@ class DownloadEngine:
                 duration=int(entry.get("duration") or 0),
                 thumbnail_url=f"https://i.ytimg.com/vi/{entry['id']}/default.jpg",
             ))
-        return songs
+        return songs[offset:offset + max_results]
 
     def get_audio_url(self, song: Song) -> str:
         url = f"https://youtube.com/watch?v={song.id}"

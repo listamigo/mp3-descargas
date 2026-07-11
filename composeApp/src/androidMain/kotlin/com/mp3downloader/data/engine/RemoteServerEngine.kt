@@ -49,13 +49,14 @@ class RemoteServerEngine : DownloadEngine {
 
     private val activeDownloads = mutableMapOf<String, Boolean>()
 
-    override suspend fun search(query: String): Result<List<Song>> {
+    override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
             "No hay servidor configurado. Ve a Ajustes > Servidor e ingresa la IP de tu PC."
         ))
         return runCatching {
             val raw = httpClient.get("$server/api/search") {
                 parameter("q", query)
+                if (offset > 0) parameter("offset", offset)
             }.bodyAsText()
             val items = remoteJson.decodeFromString<List<RemoteSearchItem>>(raw)
             items.map { item ->

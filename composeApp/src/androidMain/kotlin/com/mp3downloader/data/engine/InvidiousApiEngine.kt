@@ -58,14 +58,18 @@ class InvidiousApiEngine : DownloadEngine {
     private var instanceVerified = false
     private val activeDownloads = mutableMapOf<String, Boolean>()
 
-    override suspend fun search(query: String): Result<List<Song>> {
+    override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         return runCatching {
-            android.util.Log.d("InvidiousApi", "search: starting query=$query")
+            android.util.Log.d("InvidiousApi", "search: starting query=$query offset=$offset")
             val url = resolveInstance()
             android.util.Log.d("InvidiousApi", "search: using instance=$url")
+            val page = (offset / SEARCH_PAGE_SIZE) + 1
             val raw = httpClient
                 .get("$url/api/v1/search") {
-                    url { parameters.append("q", query) }
+                    url {
+                        parameters.append("q", query)
+                        parameters.append("page", page.toString())
+                    }
                 }
                 .bodyAsText()
             android.util.Log.d("InvidiousApi", "search: response length=${raw.length}")

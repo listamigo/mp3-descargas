@@ -9,12 +9,24 @@ class FallbackEngine(
     private val engines: List<DownloadEngine>
 ) : DownloadEngine {
 
-    override suspend fun search(query: String): Result<List<Song>> {
+    // Remembers the engine that handled the last successful search so that
+    // subsequent "load more" pages come from the same source.
+    private var lastSearchEngine: DownloadEngine? = null
+
+    override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         val errors = mutableListOf<String>()
-        for ((i, engine) in engines.withIndex()) {
-            android.util.Log.d("FallbackEngine", "search: trying engine[$i]=${engine::class.simpleName}")
-            val result = engine.search(query)
+        // Prefer the engine that already succeeded for the previous page so
+        // pagination stays consistent across "load more" requests.
+        val ordered = if (lastSearchEngine != null) {
+            listOf(lastSearchEngine!!) + engines.filter { it !== lastSearchEngine }
+        } else {
+            engines
+        }
+        for ((i, engine) in ordered.withIndex()) {
+            android.util.Log.d("FallbackEngine", "search: trying engine[$i]=${engine::class.simpleName} offset=$offset")
+            val result = engine.search(query, offset)
             if (result.isSuccess) {
+                lastSearchEngine = engine
                 android.util.Log.d("FallbackEngine", "search: engine[$i] succeeded")
                 return result
             }

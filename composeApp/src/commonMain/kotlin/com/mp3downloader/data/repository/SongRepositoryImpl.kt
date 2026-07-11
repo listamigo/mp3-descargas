@@ -10,8 +10,8 @@ class SongRepositoryImpl(
     private val engine: DownloadEngine
 ) : SongRepository {
 
-    override suspend fun search(query: String): Result<List<Song>> {
-        return engine.search(query)
+    override suspend fun search(query: String, offset: Int): Result<List<Song>> {
+        return engine.search(query, offset)
     }
 
     override suspend fun getAudioUrl(song: Song): Result<String> {

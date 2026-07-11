@@ -2,8 +2,10 @@ package com.mp3downloader.data.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import com.mp3downloader.ui.theme.AppTheme
 import com.mp3downloader.ui.theme.AppearanceSettings
+import java.io.File
 
 private const val PREFS_NAME = "mp3downloader_appearance"
 private const val KEY_THEME = "theme"
@@ -45,4 +47,20 @@ actual fun loadAppearance(): AppearanceSettings {
         wallpaperUri = p.getString(KEY_WALLPAPER_URI, null),
         wallpaperOpacity = p.getFloat(KEY_WALLPAPER_OPACITY, 0.4f)
     )
+}
+
+actual fun persistWallpaperImage(sourceUri: String): String? {
+    return try {
+        val context = getAppContext()
+        val uri = Uri.parse(sourceUri)
+        val dir = File(context.filesDir, "wallpaper")
+        dir.mkdirs()
+        val dest = File(dir, "wallpaper.jpg")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { output -> input.copyTo(output) }
+        }
+        if (dest.length() > 0) dest.absolutePath else null
+    } catch (_: Exception) {
+        null
+    }
 }

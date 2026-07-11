@@ -34,9 +34,13 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mp3downloader.data.engine.RemoteConfig
 import com.mp3downloader.data.storage.saveAppearance
+import com.mp3downloader.data.storage.persistWallpaperImage
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.ui.AppTab
 import com.mp3downloader.ui.MainViewModel
@@ -101,6 +106,8 @@ fun MainScreen(viewModel: MainViewModel) {
     val searchResults by viewModel.searchResults.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
     val searchError by viewModel.searchError.collectAsState()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsState()
+    val hasMore by viewModel.hasMore.collectAsState()
     val downloads by viewModel.downloads.collectAsState()
     val previewingSongId by viewModel.previewingSongId.collectAsState()
     val previewLoading by viewModel.previewLoading.collectAsState()
@@ -254,6 +261,9 @@ fun MainScreen(viewModel: MainViewModel) {
                         isSearching = isSearching,
                         searchError = searchError,
                         searchResults = searchResults,
+                        isLoadingMore = isLoadingMore,
+                        hasMore = hasMore,
+                        onLoadMore = viewModel::loadMore,
                         previewingSongId = previewingSongId,
                         previewLoading = previewLoading,
                         onPreviewClick = viewModel::togglePreview,
@@ -285,9 +295,14 @@ private fun WallpaperOverlay(uri: String, opacity: Float) {
     val context = LocalContext.current
     val bitmap = remember(uri) {
         try {
-            val uriObj = Uri.parse(uri)
-            val inputStream = context.contentResolver.openInputStream(uriObj)
-            val bmp = inputStream?.use { android.graphics.BitmapFactory.decodeStream(it) }
+            val bmp = if (uri.startsWith("content://")) {
+                context.contentResolver.openInputStream(Uri.parse(uri))
+                    ?.use { android.graphics.BitmapFactory.decodeStream(it) }
+            } else {
+                android.graphics.BitmapFactory.decodeFile(uri)
+                    ?: context.contentResolver.openInputStream(Uri.parse(uri))
+                        ?.use { android.graphics.BitmapFactory.decodeStream(it) }
+            }
             bmp?.asImageBitmap()
         } catch (_: Exception) {
             null
@@ -313,6 +328,9 @@ private fun SearchTab(
     isSearching: Boolean,
     searchError: String?,
     searchResults: List<com.mp3downloader.domain.model.Song>,
+    isLoadingMore: Boolean,
+    hasMore: Boolean,
+    onLoadMore: () -> Unit,
     previewingSongId: String?,
     previewLoading: String?,
     onPreviewClick: (com.mp3downloader.domain.model.Song) -> Unit,
@@ -402,6 +420,53 @@ private fun SearchTab(
                         onDownloadClick = { onDownloadClick(song) }
                     )
                 }
+
+                if (hasMore) {
+                    item {
+                        LoadMoreFooter(
+                            isLoading = isLoadingMore,
+                            onLoadMore = onLoadMore
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoadMoreFooter(
+    isLoading: Boolean,
+    onLoadMore: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        } else {
+            Button(
+                onClick = onLoadMore,
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Cargar más")
             }
         }
     }
@@ -547,7 +612,8 @@ private fun SettingsDialog(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
-            ThemeManager.updateWallpaper(it.toString())
+            val persisted = persistWallpaperImage(it.toString()) ?: it.toString()
+            ThemeManager.updateWallpaper(persisted)
             saveAppearance(ThemeManager.settings.value)
         }
     }

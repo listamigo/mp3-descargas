@@ -18,14 +18,15 @@ class YtDlpProcessEngine : DownloadEngine {
     private val activeProcesses = mutableMapOf<String, Process>()
     private val cancellations = Channel<String>(Channel.UNLIMITED)
 
-    override suspend fun search(query: String): Result<List<Song>> = withContext(Dispatchers.IO) {
+    override suspend fun search(query: String, offset: Int): Result<List<Song>> = withContext(Dispatchers.IO) {
         runCatching {
+            val total = 20 + maxOf(offset, 0)
             val process = ProcessBuilder(
                 "yt-dlp", "--js-runtimes", "deno",
                 "--flat-playlist",
                 "--dump-json",
                 "--no-warnings",
-                "ytsearch20:$query"
+                "ytsearch${total}:$query"
             )
                 .redirectErrorStream(true)
                 .start()
@@ -37,7 +38,7 @@ class YtDlpProcessEngine : DownloadEngine {
                 throw RuntimeException("yt-dlp search failed: ${output.take(200)}")
             }
 
-            output.lines().filter { it.isNotBlank() }.map { line ->
+            val all = output.lines().filter { it.isNotBlank() }.map { line ->
                 val entry = json.decodeFromString<YtDlpSearchJson>(line)
                 Song(
                     id = entry.id,
@@ -48,6 +49,7 @@ class YtDlpProcessEngine : DownloadEngine {
                     audioUrl = null
                 )
             }
+            all.drop(offset).take(20)
         }
     }
 

@@ -49,3 +49,5 @@ actual fun loadAppearance(): AppearanceSettings {
         AppearanceSettings()
     }
 }
+
+actual fun persistWallpaperImage(sourceUri: String): String? = sourceUri

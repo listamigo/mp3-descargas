@@ -193,8 +193,16 @@ class APIHandler(BaseHTTPRequestHandler):
                 if not q:
                     self._json(400, {"error": "Missing ?q= query"})
                     return
-                logger.info(f"Búsqueda: {q}")
-                songs = engine.search(q)
+                try:
+                    offset = int(params.get("offset", ["0"])[0])
+                except ValueError:
+                    offset = 0
+                try:
+                    limit = int(params.get("limit", ["20"])[0])
+                except ValueError:
+                    limit = 20
+                logger.info(f"Búsqueda: {q} (offset={offset}, limit={limit})")
+                songs = engine.search(q, max_results=limit, offset=offset)
                 self._json(200, [s.to_dict() for s in songs])
                 return
 

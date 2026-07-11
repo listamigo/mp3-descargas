@@ -2,6 +2,7 @@ package com.mp3downloader.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mp3downloader.data.engine.SEARCH_PAGE_SIZE
 import com.mp3downloader.data.repository.HistoryRepository
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.DownloadTask
@@ -52,6 +53,15 @@ class MainViewModel(
 
     private val _searchError = MutableStateFlow<String?>(null)
     val searchError: StateFlow<String?> = _searchError.asStateFlow()
+
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private val _hasMore = MutableStateFlow(false)
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    private var currentQuery: String = ""
+    private var currentOffset: Int = 0
 
     private val _downloads = MutableStateFlow<List<DownloadTask>>(emptyList())
     val downloads: StateFlow<List<DownloadTask>> = _downloads.asStateFlow()
@@ -158,13 +168,18 @@ class MainViewModel(
         val query = _searchQuery.value.trim()
         if (query.isEmpty()) return
 
+        currentQuery = query
+        currentOffset = 0
+
         viewModelScope.launch {
             _isSearching.value = true
             _searchError.value = null
+            _hasMore.value = false
 
             repository.search(query)
                 .onSuccess { songs ->
                     _searchResults.value = songs
+                    _hasMore.value = songs.size >= SEARCH_PAGE_SIZE
                     if (songs.isEmpty()) {
                         showSnackbar("Sin resultados para \"$query\"")
                     }
@@ -183,17 +198,46 @@ class MainViewModel(
         }
     }
 
+    fun loadMore() {
+        val query = currentQuery.trim()
+        if (query.isEmpty() || _isLoadingMore.value || !_hasMore.value) return
+
+        viewModelScope.launch {
+            _isLoadingMore.value = true
+            val offset = currentOffset + SEARCH_PAGE_SIZE
+
+            repository.search(query, offset)
+                .onSuccess { songs ->
+                    if (songs.isNotEmpty()) {
+                        val existingIds = _searchResults.value.map { it.id }.toSet()
+                        val newSongs = songs.filter { it.id !in existingIds }
+                        _searchResults.value = _searchResults.value + newSongs
+                        currentOffset = offset
+                        _hasMore.value = newSongs.isNotEmpty() && songs.size >= SEARCH_PAGE_SIZE
+                    } else {
+                        _hasMore.value = false
+                    }
+                }
+                .onFailure { e ->
+                    showSnackbar("Error al cargar más: ${e.message}")
+                }
+
+            _isLoadingMore.value = false
+        }
+    }
+
     fun download(song: Song) {
         val alreadyActive = _downloads.value.any {
             it.song.id == song.id && (it.status == DownloadStatus.QUEUED || it.status == DownloadStatus.DOWNLOADING)
         }
         if (alreadyActive) return
 
-        viewModelScope.launch {
-            val task = DownloadTask(song = song, status = DownloadStatus.QUEUED)
-            _downloads.value = _downloads.value + task
+        val task = DownloadTask(song = song, status = DownloadStatus.QUEUED)
+        _downloads.value = _downloads.value.filter { it.song.id != song.id } + task
 
-            _selectedTab.value = AppTab.DOWNLOADS
+        _selectedTab.value = AppTab.DOWNLOADS
+
+        viewModelScope.launch {
 
             val outputDir = getOutputDirectory()
 

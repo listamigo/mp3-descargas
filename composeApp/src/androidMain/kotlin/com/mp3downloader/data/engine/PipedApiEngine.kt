@@ -57,14 +57,16 @@ class PipedApiEngine : DownloadEngine {
     private var instanceVerified = false
     private val activeDownloads = mutableMapOf<String, Boolean>()
 
-    override suspend fun search(query: String): Result<List<Song>> {
+    override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         return runCatching {
             val url = resolveInstance()
+            val page = (offset / SEARCH_PAGE_SIZE) + 1
             val raw = httpClient
                 .get("$url/search") {
                     url {
                         parameters.append("q", query)
                         parameters.append("filter", "videos")
+                        parameters.append("page", page.toString())
                     }
                 }
                 .bodyAsText()
