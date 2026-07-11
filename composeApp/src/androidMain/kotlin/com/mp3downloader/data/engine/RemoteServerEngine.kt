@@ -93,16 +93,6 @@ class RemoteServerEngine : DownloadEngine {
         if (!isValidYouTubeId(song.id)) {
             return Result.failure(RuntimeException("ID de video inválido."))
         }
-        // Verify server is reachable before returning the preview URL
-        if (!checkHealth()) {
-            return Result.failure(RuntimeException(
-                "El servidor $server no responde. Verifica la URL o intenta más tarde."
-            ))
-        }
-        // Preview is served by /api/preview, which streams the audio straight
-        // from the server (yt-dlp runs server-side, so YouTube never sees the
-        // device's IP). Progressive MP3 streaming lets playback start in
-        // seconds even for very long mixes.
         val videoId = java.net.URLEncoder.encode(song.id, "UTF-8")
         val title = java.net.URLEncoder.encode(song.title, "UTF-8")
         return Result.success("$server/api/preview?videoId=$videoId&title=$title")

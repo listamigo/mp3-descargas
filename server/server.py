@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import logging
+import time
 
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -481,21 +482,90 @@ class APIHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    # ─── Preview stream (progresivo, solo server) ───────────
-    def _proxy_preview(self, video_id: str, title: str) -> None:
-        """Streaming progresivo de preview en MP3, sin bajar/convertir el
-        archivo completo.
+    # ─── Preview con cache de archivos temporales ───────────
+    # Descarga audio a un temp file, lo cachea, y sirve con Content-Length
+    # para que Android MediaPlayer funcione correctamente. Archivos > 30 min
+    # se limpian automáticamente.
+    PREVIEW_CACHE_DIR = os.path.join(
+        os.environ.get("LOG_DIR", "/opt/mp3downloader/logs"), "preview_cache"
+    )
+    PREVIEW_CACHE_MAX_AGE_H = 24  # horas antes de re-descargar
+    PREVIEW_CACHE_MAX_FILES = 50  # límite de archivos en cache
 
-        yt-dlp corre del lado del server (bypass tv_embedded/tv), así YouTube
-        solo ve la IP del server; el dispositivo solo consume nuestro stream.
-        El audio se canaliza yt-dlp -> ffmpeg -> respuesta, por lo que el
-        cliente empieza a reproducir tras unos segundos de buffer incluso en
-        mixes muy largos. NO altera /api/download (descargas completas).
+    def _get_preview_path(self, video_id: str) -> str:
+        safe_id = video_id.replace("/", "_").replace("..", "_")
+        return os.path.join(self.PREVIEW_CACHE_DIR, f"{safe_id}.mp3")
+
+    def _cleanup_preview_cache(self) -> None:
+        """Elimina archivos viejos si se pasa del límite."""
+        try:
+            if not os.path.isdir(self.PREVIEW_CACHE_DIR):
+                return
+            files = [
+                (os.path.join(self.PREVIEW_CACHE_DIR, f),
+                 os.path.getmtime(os.path.join(self.PREVIEW_CACHE_DIR, f)))
+                for f in os.listdir(self.PREVIEW_CACHE_DIR) if f.endswith(".mp3")
+            ]
+            if len(files) <= self.PREVIEW_CACHE_MAX_FILES:
+                return
+            files.sort(key=lambda x: x[1])  # oldest first
+            for path, _ in files[:len(files) - self.PREVIEW_CACHE_MAX_FILES]:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _proxy_preview(self, video_id: str, title: str) -> None:
+        """Preview de audio: cachea archivo MP3 temporal y sirve con headers
+        correctos para MediaPlayer (Content-Length obligatorio).
+
+        Flujo:
+        1. Si existe en cache y es reciente → servir directo (rápido)
+        2. Si no → descargar con yt-dlp + ffmpeg → cachear → servir
         """
         import subprocess as _sp
 
+        preview_path = self._get_preview_path(video_id)
+        cache_valid = False
+
+        # Verificar cache
+        if os.path.isfile(preview_path) and os.path.getsize(preview_path) > 1024:
+            age_h = (time.time() - os.path.getmtime(preview_path)) / 3600
+            if age_h < self.PREVIEW_CACHE_MAX_AGE_H:
+                cache_valid = True
+
+        if cache_valid:
+            # Servir desde cache — instantáneo
+            file_size = os.path.getsize(preview_path)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                with open(preview_path, "rb") as f:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                logger.info(f"Preview desde cache: {video_id} ({file_size} bytes)")
+                return
+            except BrokenPipeError:
+                logger.debug(f"Cliente desconectado durante preview cache de {video_id}")
+                return
+            except Exception as e:
+                logger.warning(f"Error sirviendo preview cache: {e}")
+                # Continuar con descarga fresh
+                cache_valid = False
+
+        # Descargar fresh — yt-dlp + ffmpeg → temp file
         yt_url = f"https://youtube.com/watch?v={video_id}"
         last_err = ""
+        os.makedirs(self.PREVIEW_CACHE_DIR, exist_ok=True)
 
         for client in ordered_clients():
             yt_cmd = _base_cmd(client) + [
@@ -509,11 +579,13 @@ class APIHandler(BaseHTTPRequestHandler):
                 "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
+            tmp_path = preview_path + ".tmp"
             try:
                 p1 = _sp.Popen(yt_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
                 p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
-                p1.stdout.close()  # ffmpeg cierra el pipe si yt-dlp falla
+                p1.stdout.close()
 
+                # Leer primeros bytes para validar que hay audio
                 first = p2.stdout.read(8192)
                 if not first:
                     stderr = b""
@@ -534,26 +606,41 @@ class APIHandler(BaseHTTPRequestHandler):
                         pass
                     continue
 
-                # Llegaron los primeros bytes: comprometer el stream.
-                self.send_response(200)
-                self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Connection", "close")
-                self.end_headers()
-
-                try:
-                    self.wfile.write(first)
-                    self.wfile.flush()
+                # Escribir todo a temp file
+                with open(tmp_path, "wb") as f:
+                    f.write(first)
                     while True:
                         chunk = p2.stdout.read(8192)
                         if not chunk:
                             break
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
+                        f.write(chunk)
+
+                # Renombrar atómicamente al path final
+                os.replace(tmp_path, preview_path)
+                self._cleanup_preview_cache()
+
+                # Servir el archivo
+                file_size = os.path.getsize(preview_path)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self.end_headers()
+                    with open(preview_path, "rb") as f:
+                        while True:
+                            chunk = f.read(8192)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
                     record_success(client)
-                    logger.info(f"Preview enviado: {video_id} (client={client})")
+                    logger.info(f"Preview descargado y servido: {video_id} "
+                                f"(client={client}, {file_size} bytes)")
+                    return
                 except BrokenPipeError:
                     logger.debug(f"Cliente desconectado durante preview de {video_id}")
+                    return
                 finally:
                     try:
                         p2.stdout.close()
@@ -563,17 +650,21 @@ class APIHandler(BaseHTTPRequestHandler):
                         p1.terminate(); p2.terminate()
                     except Exception:
                         pass
-                return
             except Exception as e:
                 last_err = str(e)[:300]
                 record_failure(client)
                 logger.warning(f"Preview excepción (client {client}): {e}")
                 try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+                try:
                     p1.terminate(); p2.terminate()
                 except Exception:
                     pass
 
-        # Todos los clients fallaron antes de producir audio.
+        # Todos los clients fallaron
         try:
             self._json(502, {"error": f"preview failed: {last_err}"})
         except Exception:
