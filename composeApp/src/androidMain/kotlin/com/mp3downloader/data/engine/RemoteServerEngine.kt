@@ -2,6 +2,9 @@ package com.mp3downloader.data.engine
 
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
+import com.mp3downloader.domain.service.isSafeHttpsUrl
+import com.mp3downloader.domain.service.isValidYouTubeId
+import com.mp3downloader.domain.service.sanitizeFileName
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
@@ -38,6 +41,9 @@ private val remoteJson = Json { ignoreUnknownKeys = true }
 
 class RemoteServerEngine : DownloadEngine {
 
+    /** Reject absurdly large responses to avoid filling the device storage. */
+    private val maxDownloadBytes = 190L * 1024 * 1024
+
     private val httpClient = HttpClient {
         install(HttpTimeout) {
             // Render free tier can take 30-60s for cold start
@@ -59,13 +65,21 @@ class RemoteServerEngine : DownloadEngine {
                 if (offset > 0) parameter("offset", offset)
             }.bodyAsText()
             val items = remoteJson.decodeFromString<List<RemoteSearchItem>>(raw)
-            items.map { item ->
+            items.mapNotNull { item ->
+                if (!isValidYouTubeId(item.id)) return@mapNotNull null
+                val thumbnailUrl = if (!item.thumbnailUrl.isNullOrBlank() &&
+                    isSafeHttpsUrl(item.thumbnailUrl)
+                ) {
+                    item.thumbnailUrl
+                } else {
+                    "https://i.ytimg.com/vi/${item.id}/default.jpg"
+                }
                 Song(
                     id = item.id,
                     title = item.title,
                     artist = item.artist,
                     duration = item.duration.toLong(),
-                    thumbnailUrl = item.thumbnailUrl ?: "https://i.ytimg.com/vi/${item.id}/default.jpg",
+                    thumbnailUrl = thumbnailUrl,
                     audioUrl = item.audioUrl
                 )
             }
@@ -76,13 +90,18 @@ class RemoteServerEngine : DownloadEngine {
         val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
             "No hay servidor configurado."
         ))
+        if (!isValidYouTubeId(song.id)) {
+            return Result.failure(RuntimeException("ID de video inválido."))
+        }
         // Verify server is reachable before returning the download URL
         if (!checkHealth()) {
             return Result.failure(RuntimeException(
                 "El servidor $server no responde. Verifica la URL o intenta más tarde."
             ))
         }
-        return Result.success("$server/api/download?videoId=${song.id}&title=${java.net.URLEncoder.encode(song.title, "UTF-8")}")
+        val videoId = java.net.URLEncoder.encode(song.id, "UTF-8")
+        val title = java.net.URLEncoder.encode(song.title, "UTF-8")
+        return Result.success("$server/api/download?videoId=$videoId&title=$title")
     }
 
     override fun download(
@@ -98,13 +117,19 @@ class RemoteServerEngine : DownloadEngine {
 
         emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, 0f))
 
-        val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
+        if (!isValidYouTubeId(song.id)) {
+            emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "ID de video inválido."))
+            return@flow
+        }
+
+        val safeTitle = sanitizeFileName(song.title)
         val outputFile = File(outputDir, "$safeTitle.mp3")
 
         try {
             activeDownloads[song.id] = true
 
-            val audioUrl = java.net.URL("$server/api/download?videoId=${song.id}&title=${java.net.URLEncoder.encode(song.title, "UTF-8")}")
+            val videoId = java.net.URLEncoder.encode(song.id, "UTF-8")
+            val audioUrl = java.net.URL("$server/api/download?videoId=$videoId&title=${java.net.URLEncoder.encode(song.title, "UTF-8")}")
             val connection = audioUrl.openConnection() as java.net.HttpURLConnection
             connection.connectTimeout = 60_000
             connection.readTimeout = 180_000
@@ -124,6 +149,12 @@ class RemoteServerEngine : DownloadEngine {
 
             val inputStream = connection.inputStream
             val totalBytes = connection.contentLengthLong
+            if (totalBytes > maxDownloadBytes) {
+                inputStream.close()
+                emit(DownloadResult(song.id, DownloadStatus.FAILED,
+                    error = "Archivo demasiado grande para descargar (máx 190 MB)."))
+                return@flow
+            }
             var downloadedBytes = 0L
             val bufferSize = 8192
             var lastEmitTime = 0L
@@ -136,6 +167,14 @@ class RemoteServerEngine : DownloadEngine {
                     if (bytesRead == -1) break
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
+
+                    if (downloadedBytes > maxDownloadBytes) {
+                        inputStream.close()
+                        outputFile.delete()
+                        emit(DownloadResult(song.id, DownloadStatus.FAILED,
+                            error = "Archivo demasiado grande para descargar (máx 190 MB)."))
+                        return@flow
+                    }
 
                     val now = System.currentTimeMillis()
                     if (now - lastEmitTime >= 300) {
@@ -170,7 +209,7 @@ class RemoteServerEngine : DownloadEngine {
                         filePath = outputFile.absolutePath,
                         title = song.title,
                         artist = song.artist,
-                        thumbnailUrl = song.thumbnailUrl.takeIf { it.isNotBlank() }
+                        thumbnailUrl = song.thumbnailUrl.takeIf { it.isNotBlank() && isSafeHttpsUrl(it) }
                     )
                 } catch (e: Exception) {
                     android.util.Log.e("RemoteServerEngine", "Metadata embedding failed: ${e.message}", e)

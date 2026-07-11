@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import com.mp3downloader.domain.service.sanitizeFileName
 import java.io.File
 
 actual fun openInFileManager(path: String) {
@@ -35,6 +36,7 @@ actual fun saveToPublicDownloads(sourcePath: String, fileName: String): String? 
         if (!sourceFile.exists()) return null
         val app = com.mp3downloader.Mp3DownloaderApp.instance
 
+        val safeName = sanitizeFileName(fileName)
         val mime = when {
             fileName.endsWith(".mp3") -> "audio/mpeg"
             fileName.endsWith(".m4a") || fileName.endsWith(".m4b") -> "audio/mp4"
@@ -46,7 +48,7 @@ actual fun saveToPublicDownloads(sourcePath: String, fileName: String): String? 
 
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.DISPLAY_NAME, safeName)
                 put(MediaStore.Downloads.MIME_TYPE, mime)
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
@@ -63,7 +65,7 @@ actual fun saveToPublicDownloads(sourcePath: String, fileName: String): String? 
         } else {
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
-            val dest = File(dir, fileName)
+            val dest = File(dir, safeName)
             sourceFile.copyTo(dest, overwrite = true)
             return dest.absolutePath
         }

@@ -1,6 +1,7 @@
 package com.mp3downloader.domain.service
 
 import android.util.Log
+import com.mp3downloader.domain.service.isSafeHttpsUrl
 import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
@@ -61,7 +62,7 @@ object M4aMetadataWriter {
         genre: String?
     ) {
         // Download cover art first (if needed) to avoid holding file handles
-        val coverBytes: ByteArray? = if (!thumbnailUrl.isNullOrBlank()) {
+        val coverBytes: ByteArray? = if (!thumbnailUrl.isNullOrBlank() && isSafeHttpsUrl(thumbnailUrl)) {
             try {
                 Log.d(TAG, "Downloading cover art from: $thumbnailUrl")
                 val bytes = downloadWithTimeout(thumbnailUrl, 10_000)
@@ -395,6 +396,7 @@ object M4aMetadataWriter {
             connection = url.openConnection() as HttpURLConnection
             connection.connectTimeout = timeoutMs
             connection.readTimeout = timeoutMs
+            connection.instanceFollowRedirects = false
             connection.connect()
             connection.inputStream.readBytes()
         } catch (e: Exception) {

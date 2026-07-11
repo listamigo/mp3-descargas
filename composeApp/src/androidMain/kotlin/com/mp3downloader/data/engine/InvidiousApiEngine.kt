@@ -5,6 +5,8 @@ import com.mp3downloader.data.dto.InvidiousVideoResponse
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
 import com.mp3downloader.domain.service.M4aMetadataWriter
+import com.mp3downloader.domain.service.isSafeHttpsUrl
+import com.mp3downloader.domain.service.isValidYouTubeId
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpRedirect
 import io.ktor.client.plugins.HttpTimeout
@@ -75,7 +77,7 @@ class InvidiousApiEngine : DownloadEngine {
             android.util.Log.d("InvidiousApi", "search: response length=${raw.length}")
             val items = json.decodeFromString<List<InvidiousSearchItem>>(raw)
             val songs = items.mapNotNull { item ->
-                if (item.videoId.isBlank()) return@mapNotNull null
+                if (!isValidYouTubeId(item.videoId)) return@mapNotNull null
                 Song(
                     id = item.videoId,
                     title = item.title,
@@ -116,7 +118,11 @@ class InvidiousApiEngine : DownloadEngine {
                 ?: formats.firstOrNull()
                 ?: throw RuntimeException("Sin streams de audio disponibles en Invidious ($url)")
 
-            bestAudio.url
+            val audioUrl = bestAudio.url
+            if (!isSafeHttpsUrl(audioUrl)) {
+                throw RuntimeException("URL de audio insegura recibida de Invidious")
+            }
+            audioUrl
         }
     }
 

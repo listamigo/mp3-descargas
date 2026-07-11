@@ -2,6 +2,7 @@ package com.mp3downloader.domain.service
 
 import com.mpatric.mp3agic.ID3v24Tag
 import com.mpatric.mp3agic.Mp3File
+import com.mp3downloader.domain.service.isSafeHttpsUrl
 import java.io.File
 import java.net.URL
 
@@ -41,7 +42,7 @@ object Mp3MetadataWriter {
             tag.genreDescription = genre ?: "YouTube Audio"
             tag.album = ""
 
-            if (!thumbnailUrl.isNullOrBlank()) {
+            if (!thumbnailUrl.isNullOrBlank() && isSafeHttpsUrl(thumbnailUrl)) {
                 try {
                     android.util.Log.i(TAG, "Downloading thumbnail: $thumbnailUrl")
                     val imageBytes = URL(thumbnailUrl).readBytes()

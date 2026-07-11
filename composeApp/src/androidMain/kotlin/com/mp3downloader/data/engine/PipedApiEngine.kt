@@ -5,6 +5,8 @@ import com.mp3downloader.data.dto.PipedStreamResponse
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
 import com.mp3downloader.domain.service.M4aMetadataWriter
+import com.mp3downloader.domain.service.isSafeHttpsUrl
+import com.mp3downloader.domain.service.isValidYouTubeId
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpRedirect
@@ -75,9 +77,11 @@ class PipedApiEngine : DownloadEngine {
             checkShutdown(raw, url)
 
             val parsed = json.decodeFromString<PipedSearchResponse>(raw)
-            parsed.items.map { item ->
+            parsed.items.mapNotNull { item ->
+                val id = extractVideoId(item.url)
+                if (!isValidYouTubeId(id)) return@mapNotNull null
                 Song(
-                    id = extractVideoId(item.url),
+                    id = id,
                     title = item.title,
                     artist = item.uploaderName ?: "Unknown",
                     duration = (item.duration ?: 0L),
@@ -113,7 +117,12 @@ class PipedApiEngine : DownloadEngine {
                 .maxByOrNull { it.bitRate ?: 0 }
                 ?: streamResponse.audioStreams.firstOrNull()
 
-            if (bestAudio != null) return@runCatching bestAudio.url
+            if (bestAudio != null) {
+                if (!isSafeHttpsUrl(bestAudio.url)) {
+                    throw RuntimeException("URL de audio insegura recibida de Piped")
+                }
+                return@runCatching bestAudio.url
+            }
 
             // If no dedicated audio stream, try video streams (some have combined audio)
             val bestVideo = streamResponse.videoStreams
@@ -129,7 +138,12 @@ class PipedApiEngine : DownloadEngine {
                     }
                 }
 
-            if (bestVideo != null) return@runCatching bestVideo.url
+            if (bestVideo != null) {
+                if (!isSafeHttpsUrl(bestVideo.url)) {
+                    throw RuntimeException("URL de audio insegura recibida de Piped")
+                }
+                return@runCatching bestVideo.url
+            }
 
             val preview = raw.take(200).replace("\n", " ")
             throw RuntimeException("Sin streams en $url. Respuesta: $preview")
