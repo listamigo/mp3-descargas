@@ -68,12 +68,14 @@ PO_TOKEN = os.environ.get("YT_PO_TOKEN")
 # ═══════════════════════════════════════════════════════════════
 # Circuit breaker por player client
 # ────────────────────────────────────────────────────────────────
-# YouTube reta los clientes de forma intermitente. En lugar de probar
-# siempre todos los clients en cada request (lento + más retos), abrimos
-# el circuito de un client tras N fallos consecutivos y lo saltamos
-# durante CB_OPEN_SECONDS, reintentándolo luego (half-open).
-_CB_FAIL_THRESHOLD = int(os.environ.get("CB_FAIL_THRESHOLD", "3"))
-_CB_OPEN_SECONDS = int(os.environ.get("CB_OPEN_SECONDS", "300"))
+# YouTube reta los clientes de forma intermitente. Para no martillar un
+# client que acaba de fallar, los que fallaron hace poco van AL FINAL de
+# la lista (cooldown corto). PERO la lista NUNCA queda vacía: si todos
+# fallaron recientemente, se prueban igual. Un breaker "abierto" que
+# bloquee todos los clients durante minutos rompía preview Y descarga
+# (un solo mix fallido dejaba el server muerto). Por eso el cooldown es
+# corto y nunca permanente.
+_CB_COOLDOWN_SECONDS = int(os.environ.get("CB_COOLDOWN_SECONDS", "60"))
 
 
 class _ClientHealth:
@@ -82,18 +84,17 @@ class _ClientHealth:
         self.failures = 0
         self.successes = 0
         self.last_failure = 0.0
-        self.open_until = 0.0
 
 
 _client_health = {c: _ClientHealth() for c in PLAYER_CLIENTS}
 
 
-def _is_open(client: str) -> bool:
+def _seconds_since_failure(client: str) -> float:
     h = _client_health.get(client)
     if not h:
-        return False
+        return 1e9
     with h.lock:
-        return time.time() < h.open_until
+        return time.time() - h.last_failure
 
 
 def record_success(client: str) -> None:
@@ -103,7 +104,7 @@ def record_success(client: str) -> None:
     with h.lock:
         h.failures = 0
         h.successes += 1
-        h.open_until = 0.0
+        h.last_failure = 0.0
 
 
 def record_failure(client: str) -> None:
@@ -113,14 +114,17 @@ def record_failure(client: str) -> None:
     with h.lock:
         h.failures += 1
         h.last_failure = time.time()
-        if h.failures >= _CB_FAIL_THRESHOLD:
-            h.open_until = time.time() + _CB_OPEN_SECONDS
-            logger.warning(f"Circuito ABIERTO para client '{client}' ({h.failures} fallos)")
 
 
 def ordered_clients():
-    """Clients a probar: cerrados/half-open primero; los abiertos se saltan."""
-    return [c for c in PLAYER_CLIENTS if not _is_open(c)]
+    """Clients en orden; los que fallaron hace poco van al final.
+    NUNCA devuelve lista vacía (eso rompería preview y descarga)."""
+    fresh = [c for c in PLAYER_CLIENTS
+             if _seconds_since_failure(c) >= _CB_COOLDOWN_SECONDS]
+    if fresh:
+        cool = [c for c in PLAYER_CLIENTS if c not in fresh]
+        return fresh + cool
+    return list(PLAYER_CLIENTS)
 
 
 def client_state(client: str) -> dict:
@@ -128,10 +132,9 @@ def client_state(client: str) -> dict:
     if not h:
         return {"client": client, "status": "unknown"}
     with h.lock:
-        now = time.time()
-        if now < h.open_until:
-            status = "open"
-        elif h.failures >= _CB_FAIL_THRESHOLD:
+        if _seconds_since_failure(client) < _CB_COOLDOWN_SECONDS:
+            status = "cooldown"
+        elif h.failures >= 3:
             status = "half-open"
         else:
             status = "closed"
