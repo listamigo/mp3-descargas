@@ -40,3 +40,28 @@ echo "Respuesta Railway: $RESP"
 # Verificar
 HEALTH=$(curl -s "$RAILWAY_URL/api/health" --max-time 10)
 echo "Health: $HEALTH"
+
+# ───────────────────────────────────────────────────────────────
+# Persistencia PERMANENTE: guardar cookies en variable de entorno
+# de Railway (COOKIES_B64). El filesystem del contenedor es efímero
+# y se borra en cada redeploy/commit; las variables de entorno SÍ
+# persisten, así el server restaura las cookies solo al arrancar.
+# ───────────────────────────────────────────────────────────────
+if command -v railway >/dev/null 2>&1; then
+  echo "Guardando cookies en variable de entorno COOKIES_B64 (persistente)..."
+  B64=$(base64 -w0 "$DST")
+  railway variables set COOKIES_B64="$B64" 2>&1 | tail -3 || \
+    echo "ADVERTENCIA: no se pudo setear COOKIES_B64 (¿railway autenticado?)."
+
+  # PO token opcional para evitar el reto 'eres un bot' sin cookies
+  if [ -n "$YT_PO_TOKEN" ]; then
+    echo "Guardando YT_PO_TOKEN (persistente)..."
+    railway variables set YT_PO_TOKEN="$YT_PO_TOKEN" 2>&1 | tail -3 || \
+      echo "ADVERTENCIA: no se pudo setear YT_PO_TOKEN."
+  fi
+  echo "Listo: las cookies sobrevivirán a futuros commits/redeploys."
+else
+  echo "ADVERTENCIA: 'railway' CLI no encontrado. Instala Railway CLI y"
+  echo "ejecuta:  railway variables set COOKIES_B64=\"\$(base64 -w0 '$DST')\""
+  echo "para que las cookies no se pierdan en el próximo deploy."
+fi

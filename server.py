@@ -102,6 +102,39 @@ def _get_ytdlp_version() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Persistencia de cookies entre redeploys
+# ═══════════════════════════════════════════════════════════════
+# Railway (y PaaS similares) usan un filesystem efímero: /data se borra
+# en cada redeploy/commit, por eso las cookies subidas desaparecían tras
+# cada deploy. La solución permanente es guardarlas también en una
+# variable de entorno (COOKIES_B64) que SÍ persiste entre deploys, y
+# restaurar el archivo desde ahí al arrancar si falta.
+
+def restore_cookies_from_env() -> bool:
+    """Restaura cookies desde COOKIES_B64 si el archivo no existe.
+
+    Devuelve True si restauró (o ya existía) cookies válidas.
+    """
+    global COOKIES_FILE
+    if os.path.isfile(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+        return True
+
+    b64 = os.environ.get("COOKIES_B64")
+    if not b64:
+        return False
+    try:
+        import base64
+        os.makedirs(os.path.dirname(COOKIES_FILE), exist_ok=True)
+        with open(COOKIES_FILE, "wb") as f:
+            f.write(base64.b64decode(b64))
+        logger.info(f"Cookies restauradas desde COOKIES_B64 ({os.path.getsize(COOKIES_FILE)} bytes)")
+        return True
+    except Exception as e:
+        logger.warning(f"No se pudieron restaurar cookies desde COOKIES_B64: {e}")
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
 # Servidor HTTP
 # ═══════════════════════════════════════════════════════════════
 
@@ -434,6 +467,9 @@ def main():
 
     # Actualizar yt-dlp al arrancar
     ensure_ytdlp_updated()
+
+    # Restaurar cookies persistentes (sobreviven a redeploys)
+    restore_cookies_from_env()
 
     server = ThreadingHTTPServer((HOST, PORT), APIHandler)
     logger.info(f"Servidor escuchando en http://{HOST}:{PORT}")
