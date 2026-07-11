@@ -29,6 +29,7 @@ from models.song import Song
 from download_engine import (
     DownloadEngine,
     COOKIES_FILE,
+    _base_cmd,
     ordered_clients,
     get_client_health,
     record_success,
@@ -257,6 +258,16 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._proxy_download(video_id, title)
                 return
 
+            if path == "/api/preview":
+                video_id = params.get("videoId", [""])[0]
+                if not video_id:
+                    self._json(400, {"error": "Missing ?videoId="})
+                    return
+                title = params.get("title", [""])[0] or "audio"
+                logger.info(f"Preview stream: {video_id} - {title}")
+                self._proxy_preview(video_id, title)
+                return
+
             if path == "/api/health":
                 self._json(200, {
                     "status": "ok",
@@ -469,6 +480,104 @@ class APIHandler(BaseHTTPRequestHandler):
                 os.rmdir(tmp_dir)
             except Exception:
                 pass
+
+    # ─── Preview stream (progresivo, solo server) ───────────
+    def _proxy_preview(self, video_id: str, title: str) -> None:
+        """Streaming progresivo de preview en MP3, sin bajar/convertir el
+        archivo completo.
+
+        yt-dlp corre del lado del server (bypass tv_embedded/tv), así YouTube
+        solo ve la IP del server; el dispositivo solo consume nuestro stream.
+        El audio se canaliza yt-dlp -> ffmpeg -> respuesta, por lo que el
+        cliente empieza a reproducir tras unos segundos de buffer incluso en
+        mixes muy largos. NO altera /api/download (descargas completas).
+        """
+        import subprocess as _sp
+
+        yt_url = f"https://youtube.com/watch?v={video_id}"
+        last_err = ""
+
+        for client in ordered_clients():
+            yt_cmd = _base_cmd(client) + [
+                "-o", "-",
+                "-f", "bestaudio[ext=m4a]/bestaudio",
+                "--no-playlist", "--no-part",
+                yt_url,
+            ]
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", "-",
+                "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
+            ]
+
+            try:
+                p1 = _sp.Popen(yt_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                p1.stdout.close()  # ffmpeg cierra el pipe si yt-dlp falla
+
+                first = p2.stdout.read(8192)
+                if not first:
+                    stderr = b""
+                    if p1.stderr:
+                        stderr += (p1.stderr.read() or b"")
+                    if p2.stderr:
+                        stderr += (p2.stderr.read() or b"")
+                    last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
+                    record_failure(client)
+                    logger.warning(f"Preview falló (client {client}): {last_err}")
+                    try:
+                        p2.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        p1.terminate(); p2.terminate()
+                    except Exception:
+                        pass
+                    continue
+
+                # Llegaron los primeros bytes: comprometer el stream.
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                try:
+                    self.wfile.write(first)
+                    self.wfile.flush()
+                    while True:
+                        chunk = p2.stdout.read(8192)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                    record_success(client)
+                    logger.info(f"Preview enviado: {video_id} (client={client})")
+                except BrokenPipeError:
+                    logger.debug(f"Cliente desconectado durante preview de {video_id}")
+                finally:
+                    try:
+                        p2.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        p1.terminate(); p2.terminate()
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                last_err = str(e)[:300]
+                record_failure(client)
+                logger.warning(f"Preview excepción (client {client}): {e}")
+                try:
+                    p1.terminate(); p2.terminate()
+                except Exception:
+                    pass
+
+        # Todos los clients fallaron antes de producir audio.
+        try:
+            self._json(502, {"error": f"preview failed: {last_err}"})
+        except Exception:
+            pass
 
     # ─── Timeout de conexión ─────────────────────────────────
     def handle_one_request(self):
