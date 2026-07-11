@@ -19,22 +19,40 @@ COOKIES_FILE = os.environ.get(
     os.path.expanduser("~/.mp3downloader/cookies/cookies.txt")
 )
 
-
+# Order matters: clients that bypass YouTube's bot/login challenge are
+# tried first so downloads keep working even when cookies are missing or
+# expired. `tv_embedded`/`tv` rarely trigger "prove you're not a bot".
 PLAYER_CLIENTS = [
-    "web",
+    "tv_embedded",
+    "tv",
     "mweb",
+    "web",
     "android",
     "ios",
     "android_vr,web",
 ]
 
+# Optional Proof-of-Origin token (env var YT_PO_TOKEN) in yt-dlp syntax
+# "client+token" (e.g. "web+XXXX"). Strongly recommended to avoid bot
+# challenges without depending on a session cookie that can expire.
+PO_TOKEN = os.environ.get("YT_PO_TOKEN")
 
-def _base_cmd(client: str | None = None) -> list[str]:
-    """Return base yt-dlp args common to all invocations."""
+
+def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
+    """Return base yt-dlp args common to all invocations.
+
+    `cookies` lets the caller disable cookies for a given attempt. This is
+    the key fallback: an expired/invalid cookie session can restrict the
+    available formats and trigger "requested format is not available", while
+    a cookie-free request often still succeeds for public videos.
+    """
     cmd = ["yt-dlp", "--no-warnings"]
     player = client or PLAYER_CLIENTS[0]
-    cmd.extend(["--extractor-args", f"youtube:player_client={player}"])
-    if os.path.isfile(COOKIES_FILE):
+    extractor = f"youtube:player_client={player}"
+    if PO_TOKEN:
+        extractor += f";po_token={PO_TOKEN}"
+    cmd.extend(["--extractor-args", extractor])
+    if cookies and os.path.isfile(COOKIES_FILE):
         cmd.extend(["--cookies", COOKIES_FILE])
     return cmd
 
@@ -71,18 +89,20 @@ class DownloadEngine:
     def get_audio_url(self, song: Song) -> str:
         url = f"https://youtube.com/watch?v={song.id}"
         last_err = ""
-        for client in PLAYER_CLIENTS:
-            cmd = _base_cmd(client) + [
-                "-f", "best",
-                "--get-url", url
-            ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True, timeout=30
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip().split("\n")[0].strip()
-            last_err = result.stderr[:200]
+        cookie_passes = [True, False] if os.path.isfile(COOKIES_FILE) else [False]
+        for use_cookies in cookie_passes:
+            for client in PLAYER_CLIENTS:
+                cmd = _base_cmd(client, cookies=use_cookies) + [
+                    "-f", "bestaudio/best",
+                    "--get-url", url
+                ]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip().split("\n")[0].strip()
+                last_err = result.stderr[:200]
         raise RuntimeError(f"All player clients failed for {song.id}: {last_err}")
 
     def download(
@@ -102,85 +122,90 @@ class DownloadEngine:
         if on_progress:
             on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "")
 
-        # Try multiple format options in order of preference
+        # Robust format selectors: let yt-dlp self-fall-back to whatever
+        # audio stream is actually available instead of hard-requiring a
+        # specific container (the old [ext=m4a] filter caused
+        # "requested format is not available").
         format_attempts = [
-            "bestaudio[ext=m4a]",
-            "bestaudio",
-            "bestaudio[ext=webm]",
+            "bestaudio/best",
             "best",
         ]
 
         last_error = ""
-        for client in PLAYER_CLIENTS:
-            for fmt in format_attempts:
-                if cancel_flag and cancel_flag():
-                    if on_complete:
-                        on_complete(None, "Cancelado")
-                    return
-
-                try:
-                    cmd = _base_cmd(client) + [
-                        "--newline",
-                        "-f", fmt,
-                        "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
-                        "--embed-thumbnail", "--add-metadata",
-                        "--write-thumbnail", "--convert-thumbnails", "jpg",
-                        "--parse-metadata", "title:%(title)s",
-                        "--parse-metadata", "artist:%(channel)s",
-                        "--parse-metadata", "album:%(playlist_title|)s",
-                        "--parse-metadata", "genre:YouTube Audio",
-                        "-o", f"{base_path}.%(ext)s",
-                        f"https://youtube.com/watch?v={song.id}",
-                    ]
-
-                    process = subprocess.Popen(
-                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-                    )
-
-                    if process_tracker:
-                        process_tracker(process)
-
-                    pct_re = re.compile(r"\[download\]\s+(\d+\.\d+)%")
-                    size_re = re.compile(r"of\s+~?([\d.]+\s*[KMG]?i?B)")
-                    speed_re = re.compile(r"at\s+([\d.]+\s*[KMG]?i?B/s)")
-
-                    for line in iter(process.stdout.readline, ""):
-                        if cancel_flag and cancel_flag():
-                            process.terminate()
-                            if on_complete:
-                                on_complete(None, "Cancelado")
-                            return
-                        m = pct_re.search(line)
-                        if m and on_progress:
-                            pct = float(m.group(1)) / 100.0
-                            size_m = size_re.search(line)
-                            speed_m = speed_re.search(line)
-                            total = size_m.group(1).strip() if size_m else ""
-                            speed = speed_m.group(1).strip() if speed_m else ""
-                            on_progress(DownloadStatus.DOWNLOADING, pct, speed, total)
-
-                    process.stdout.close()
-                    process.wait()
-
-                    if process.returncode == 0:
-                        if on_progress:
-                            on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
-                        self._embed_metadata(output_path, thumb_path)
+        # Pass 1: with cookies (best quality / restricted content).
+        # Pass 2: without cookies (tv_embedded etc. bypass bot checks).
+        cookie_passes = [True, False] if os.path.isfile(COOKIES_FILE) else [False]
+        for use_cookies in cookie_passes:
+            for client in PLAYER_CLIENTS:
+                for fmt in format_attempts:
+                    if cancel_flag and cancel_flag():
                         if on_complete:
-                            on_complete(output_path, None)
+                            on_complete(None, "Cancelado")
                         return
 
-                    stderr = process.stderr.read() if process.stderr else ""
-                    last_error = f"[{client}] Format '{fmt}' failed: {stderr[:200]}"
-                    print(f"[DL] {last_error}", flush=True)
+                    try:
+                        cmd = _base_cmd(client, cookies=use_cookies) + [
+                            "--newline",
+                            "-f", fmt,
+                            "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
+                            "--embed-thumbnail", "--add-metadata",
+                            "--write-thumbnail", "--convert-thumbnails", "jpg",
+                            "--parse-metadata", "title:%(title)s",
+                            "--parse-metadata", "artist:%(channel)s",
+                            "--parse-metadata", "album:%(playlist_title|)s",
+                            "--parse-metadata", "genre:YouTube Audio",
+                            "-o", f"{base_path}.%(ext)s",
+                            f"https://youtube.com/watch?v={song.id}",
+                        ]
 
-                except Exception as e:
-                    last_error = f"[{client}] Format '{fmt}' exception: {e}"
-                    print(f"[DL] {last_error}", flush=True)
+                        process = subprocess.Popen(
+                            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                        )
 
-                for f in [output_path, thumb_path, f"{base_path}.m4a", f"{base_path}.webm"]:
-                    if os.path.isfile(f):
-                        os.remove(f)
+                        if process_tracker:
+                            process_tracker(process)
+
+                        pct_re = re.compile(r"\[download\]\s+(\d+\.\d+)%")
+                        size_re = re.compile(r"of\s+~?([\d.]+\s*[KMG]?i?B)")
+                        speed_re = re.compile(r"at\s+([\d.]+\s*[KMG]?i?B/s)")
+
+                        for line in iter(process.stdout.readline, ""):
+                            if cancel_flag and cancel_flag():
+                                process.terminate()
+                                if on_complete:
+                                    on_complete(None, "Cancelado")
+                                return
+                            m = pct_re.search(line)
+                            if m and on_progress:
+                                pct = float(m.group(1)) / 100.0
+                                size_m = size_re.search(line)
+                                speed_m = speed_re.search(line)
+                                total = size_m.group(1).strip() if size_m else ""
+                                speed = speed_m.group(1).strip() if speed_m else ""
+                                on_progress(DownloadStatus.DOWNLOADING, pct, speed, total)
+
+                        process.stdout.close()
+                        process.wait()
+
+                        if process.returncode == 0:
+                            if on_progress:
+                                on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
+                            self._embed_metadata(output_path, thumb_path)
+                            if on_complete:
+                                on_complete(output_path, None)
+                            return
+
+                        stderr = process.stderr.read() if process.stderr else ""
+                        last_error = f"[{client}] Format '{fmt}' failed: {stderr[:200]}"
+                        print(f"[DL] {last_error}", flush=True)
+
+                    except Exception as e:
+                        last_error = f"[{client}] Format '{fmt}' exception: {e}"
+                        print(f"[DL] {last_error}", flush=True)
+
+                    for f in [output_path, thumb_path, f"{base_path}.m4a", f"{base_path}.webm"]:
+                        if os.path.isfile(f):
+                            os.remove(f)
 
         if on_complete:
             on_complete(None, last_error or "All download formats failed")
