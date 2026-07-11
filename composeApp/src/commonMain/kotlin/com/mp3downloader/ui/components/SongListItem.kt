@@ -11,8 +11,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -37,6 +37,7 @@ fun SongListItem(
     song: Song,
     isPreviewing: Boolean,
     isPreviewLoading: Boolean,
+    isPaused: Boolean = false,
     onPreviewClick: () -> Unit,
     onDownloadClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -109,22 +110,31 @@ fun SongListItem(
                     color = MaterialTheme.colorScheme.primary
                 )
             } else {
+                val active = isPreviewing && !isPaused
                 IconButton(
                     onClick = onPreviewClick,
                     colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = if (isPreviewing)
+                        containerColor = if (active)
                             MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
                         else
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                        contentColor = if (isPreviewing)
+                        contentColor = if (active)
                             MaterialTheme.colorScheme.error
                         else
                             MaterialTheme.colorScheme.primary
                     )
                 ) {
                     Icon(
-                        imageVector = if (isPreviewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                        contentDescription = if (isPreviewing) "Detener" else "Vista previa",
+                        imageVector = when {
+                            isPreviewing && !isPaused -> Icons.Rounded.Pause
+                            isPreviewing && isPaused -> Icons.Rounded.PlayArrow
+                            else -> Icons.Rounded.PlayArrow
+                        },
+                        contentDescription = when {
+                            isPreviewing && !isPaused -> "Pausar"
+                            isPreviewing && isPaused -> "Reanudar"
+                            else -> "Vista previa"
+                        },
                         modifier = Modifier.size(22.dp)
                     )
                 }

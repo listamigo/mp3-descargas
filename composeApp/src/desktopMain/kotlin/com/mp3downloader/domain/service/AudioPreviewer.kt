@@ -55,6 +55,14 @@ actual class AudioPreviewer {
         }.apply { isDaemon = true; start() }
     }
 
+    actual fun pause() {
+        clip?.apply { if (isRunning) stop() }
+    }
+
+    actual fun resume() {
+        clip?.apply { if (!isRunning) start() }
+    }
+
     actual fun stop() {
         thread?.interrupt()
         thread = null
@@ -66,4 +74,5 @@ actual class AudioPreviewer {
     }
 
     actual val isPlaying: Boolean get() = clip?.isRunning == true
+    actual val isPaused: Boolean get() = clip?.isRunning == false && clip != null
 }

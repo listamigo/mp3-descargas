@@ -78,6 +78,9 @@ class MainViewModel(
     private val _previewingSongId = MutableStateFlow<String?>(null)
     val previewingSongId: StateFlow<String?> = _previewingSongId.asStateFlow()
 
+    private val _previewPaused = MutableStateFlow(false)
+    val previewPaused: StateFlow<Boolean> = _previewPaused.asStateFlow()
+
     private val _snackbarEvent = MutableSharedFlow<SnackbarEvent>()
     val snackbarEvent: SharedFlow<SnackbarEvent> = _snackbarEvent.asSharedFlow()
 
@@ -110,16 +113,24 @@ class MainViewModel(
         // If already loading this song's preview, ignore the click
         if (_previewLoading.value == song.id) return
 
-        // If this song is already being previewed, stop it
+        // Same song: toggle between pause and resume.
         if (_previewingSongId.value == song.id) {
-            audioPreviewer.stop()
-            _previewingSongId.value = null
+            if (_previewPaused.value) {
+                audioPreviewer.resume()
+                _previewPaused.value = false
+            } else {
+                audioPreviewer.pause()
+                _previewPaused.value = true
+            }
             return
         }
 
-        // Stop any current playback
+        // Different song (or nothing playing): stop whatever is playing and
+        // start the new one. This guarantees the previous preview never keeps
+        // sounding in parallel.
         audioPreviewer.stop()
         _previewingSongId.value = null
+        _previewPaused.value = false
 
         viewModelScope.launch {
             // If URL is cached, play from cache
@@ -130,6 +141,7 @@ class MainViewModel(
                     showSnackbar("Error de reproducción: $errorMsg")
                 })
                 _previewingSongId.value = song.id
+                _previewPaused.value = false
                 return@launch
             }
 
@@ -143,6 +155,7 @@ class MainViewModel(
                         onError = { errorMsg ->
                             _previewingSongId.value = null
                             _previewLoading.value = null
+                            _previewPaused.value = false
                             showSnackbar("Error de reproducción: $errorMsg")
                         },
                         onPlaying = {
@@ -150,6 +163,7 @@ class MainViewModel(
                         }
                     )
                     _previewingSongId.value = song.id
+                    _previewPaused.value = false
                 }
                 .onFailure { e ->
                     _previewLoading.value = null
@@ -161,6 +175,7 @@ class MainViewModel(
     fun stopPreview() {
         audioPreviewer.stop()
         _previewingSongId.value = null
+        _previewPaused.value = false
     }
 
     fun selectTab(tab: AppTab) {

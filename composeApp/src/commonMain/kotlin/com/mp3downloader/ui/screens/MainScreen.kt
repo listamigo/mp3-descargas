@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -77,6 +78,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -111,6 +117,7 @@ fun MainScreen(viewModel: MainViewModel) {
     val downloads by viewModel.downloads.collectAsState()
     val previewingSongId by viewModel.previewingSongId.collectAsState()
     val previewLoading by viewModel.previewLoading.collectAsState()
+    val previewPaused by viewModel.previewPaused.collectAsState()
     val appearance by ThemeManager.settings.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -266,9 +273,11 @@ fun MainScreen(viewModel: MainViewModel) {
                         onLoadMore = viewModel::loadMore,
                         previewingSongId = previewingSongId,
                         previewLoading = previewLoading,
+                        previewPaused = previewPaused,
                         onPreviewClick = viewModel::togglePreview,
                         onDownloadClick = viewModel::download,
-                        onErrorDismiss = viewModel::clearError
+                        onErrorDismiss = viewModel::clearError,
+                        onRefresh = viewModel::search
                     )
                     AppTab.DOWNLOADS -> DownloadsTab(
                         downloads = downloads,
@@ -320,6 +329,7 @@ private fun WallpaperOverlay(uri: String, opacity: Float) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchTab(
     searchQuery: String,
@@ -333,9 +343,11 @@ private fun SearchTab(
     onLoadMore: () -> Unit,
     previewingSongId: String?,
     previewLoading: String?,
+    previewPaused: Boolean,
     onPreviewClick: (com.mp3downloader.domain.model.Song) -> Unit,
     onDownloadClick: (com.mp3downloader.domain.model.Song) -> Unit,
-    onErrorDismiss: () -> Unit
+    onErrorDismiss: () -> Unit,
+    onRefresh: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SearchBar(
@@ -407,30 +419,113 @@ private fun SearchTab(
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                items(searchResults, key = { it.id }) { song ->
-                    SongListItem(
-                        song = song,
-                        isPreviewing = previewingSongId == song.id,
-                        isPreviewLoading = previewLoading == song.id,
-                        onPreviewClick = { onPreviewClick(song) },
-                        onDownloadClick = { onDownloadClick(song) }
-                    )
-                }
+            val listState = rememberLazyListState()
+            var isRefreshing by remember { mutableStateOf(false) }
+            var pullOffset by remember { mutableFloatStateOf(0f) }
+            val refreshThreshold = 80f
+            LaunchedEffect(isSearching) {
+                if (isRefreshing && !isSearching) isRefreshing = false
+            }
+            val nestedScrollConnection = remember {
+                object : NestedScrollConnection {
+                    private fun atTop() =
+                        listState.firstVisibleItemIndex == 0 &&
+                            listState.firstVisibleItemScrollOffset == 0
 
-                if (hasMore) {
-                    item {
-                        LoadMoreFooter(
-                            isLoading = isLoadingMore,
-                            onLoadMore = onLoadMore
-                        )
+                    override fun onPreScroll(
+                        available: Offset,
+                        source: NestedScrollSource
+                    ): Offset {
+                        if (source == NestedScrollSource.Drag && available.y > 0f && atTop()) {
+                            pullOffset = (pullOffset + available.y).coerceAtMost(140f)
+                            return available
+                        }
+                        return Offset.Zero
+                    }
+
+                    override fun onPostScroll(
+                        consumed: Offset,
+                        available: Offset,
+                        source: NestedScrollSource
+                    ): Offset {
+                        if (source == NestedScrollSource.Drag && available.y > 0f && atTop()) {
+                            pullOffset = (pullOffset + available.y).coerceAtMost(140f)
+                            return available
+                        }
+                        return Offset.Zero
+                    }
+
+                    override suspend fun onPreFling(available: Velocity): Velocity {
+                        if (pullOffset > refreshThreshold && !isRefreshing) {
+                            isRefreshing = true
+                            onRefresh()
+                        }
+                        pullOffset = 0f
+                        return Velocity.Zero
                     }
                 }
             }
+            Box(modifier = Modifier.fillMaxSize().nestedScroll(nestedScrollConnection)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(searchResults, key = { it.id }) { song ->
+                        SongListItem(
+                            song = song,
+                            isPreviewing = previewingSongId == song.id,
+                            isPreviewLoading = previewLoading == song.id,
+                            isPaused = previewPaused && previewingSongId == song.id,
+                            onPreviewClick = { onPreviewClick(song) },
+                            onDownloadClick = { onDownloadClick(song) }
+                        )
+                    }
+
+                    if (hasMore) {
+                        item {
+                            LoadMoreFooter(
+                                isLoading = isLoadingMore,
+                                onLoadMore = onLoadMore
+                            )
+                        }
+                    }
+                }
+
+                if (pullOffset > 1f || isRefreshing) {
+                    PullToRefreshIndicator(
+                        pullOffset = pullOffset,
+                        isRefreshing = isRefreshing,
+                        threshold = refreshThreshold,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun PullToRefreshIndicator(
+    pullOffset: Float,
+    isRefreshing: Boolean,
+    threshold: Float,
+    modifier: Modifier = Modifier
+) {
+    val progress = (pullOffset / threshold).coerceIn(0f, 1f)
+    if (isRefreshing) {
+        CircularProgressIndicator(
+            modifier = modifier.size(28.dp),
+            strokeWidth = 3.dp,
+            color = MaterialTheme.colorScheme.primary
+        )
+    } else {
+        CircularProgressIndicator(
+            progress = progress,
+            modifier = modifier.size(28.dp),
+            strokeWidth = 3.dp,
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }
 
