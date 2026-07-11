@@ -132,7 +132,11 @@ def client_state(client: str) -> dict:
     if not h:
         return {"client": client, "status": "unknown"}
     with h.lock:
-        if _seconds_since_failure(client) < _CB_COOLDOWN_SECONDS:
+        # NOTA: NO llamar a _seconds_since_failure() aquí porque ya tenemos
+        # h.lock adquirido y _seconds_since_failure() también lo adquiere,
+        # causando un deadlock (threading.Lock NO es reentrante).
+        since_failure = time.time() - h.last_failure
+        if since_failure < _CB_COOLDOWN_SECONDS:
             status = "cooldown"
         elif h.failures >= 3:
             status = "half-open"
