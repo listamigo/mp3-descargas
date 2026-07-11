@@ -9,6 +9,10 @@ import com.mp3downloader.domain.model.DownloadTask
 import com.mp3downloader.domain.model.Song
 import com.mp3downloader.domain.repository.SongRepository
 import com.mp3downloader.domain.service.AudioPreviewer
+import com.mp3downloader.domain.service.LruCache
+import com.mp3downloader.domain.service.sanitizeFileName
+import com.mp3downloader.domain.service.sanitizeSearchQuery
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -19,6 +23,8 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.FlowPreview
 
 enum class AppTab(val label: String) {
@@ -75,7 +81,13 @@ class MainViewModel(
     private val _snackbarEvent = MutableSharedFlow<SnackbarEvent>()
     val snackbarEvent: SharedFlow<SnackbarEvent> = _snackbarEvent.asSharedFlow()
 
-    private val audioUrlCache = mutableMapOf<String, String>()
+    private val audioUrlCache = LruCache<String, String>(200)
+
+    /** At most 3 concurrent downloads so we never flood the backend. */
+    private val downloadSemaphore = Semaphore(3)
+
+    /** Tracks the active search/load-more request so a new one can cancel it. */
+    private var requestJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -109,34 +121,29 @@ class MainViewModel(
         audioPreviewer.stop()
         _previewingSongId.value = null
 
-        // If URL is cached, play from cache
-        val cachedUrl = audioUrlCache[song.id]
-        if (cachedUrl != null) {
-            audioPreviewer.play(cachedUrl, onError = { errorMsg ->
-                viewModelScope.launch {
+        viewModelScope.launch {
+            // If URL is cached, play from cache
+            val cachedUrl = audioUrlCache.get(song.id)
+            if (cachedUrl != null) {
+                audioPreviewer.play(cachedUrl, onError = { errorMsg ->
                     _previewingSongId.value = null
                     showSnackbar("Error de reproducción: $errorMsg")
-                }
-            })
-            _previewingSongId.value = song.id
-            return
-        }
+                })
+                _previewingSongId.value = song.id
+                return@launch
+            }
 
-        // Fetch audio URL and play
-        viewModelScope.launch {
             _previewLoading.value = song.id
 
             repository.getAudioUrl(song)
                 .onSuccess { url ->
-                    audioUrlCache[song.id] = url
+                    audioUrlCache.put(song.id, url)
                     audioPreviewer.play(
                         url = url,
                         onError = { errorMsg ->
-                            viewModelScope.launch {
-                                _previewingSongId.value = null
-                                _previewLoading.value = null
-                                showSnackbar("Error de reproducción: $errorMsg")
-                            }
+                            _previewingSongId.value = null
+                            _previewLoading.value = null
+                            showSnackbar("Error de reproducción: $errorMsg")
                         },
                         onPlaying = {
                             _previewLoading.value = null
@@ -165,13 +172,15 @@ class MainViewModel(
     }
 
     fun search() {
-        val query = _searchQuery.value.trim()
+        val query = sanitizeSearchQuery(_searchQuery.value)
         if (query.isEmpty()) return
 
         currentQuery = query
         currentOffset = 0
 
-        viewModelScope.launch {
+        requestJob?.cancel()
+
+        requestJob = viewModelScope.launch {
             _isSearching.value = true
             _searchError.value = null
             _hasMore.value = false
@@ -202,7 +211,10 @@ class MainViewModel(
         val query = currentQuery.trim()
         if (query.isEmpty() || _isLoadingMore.value || !_hasMore.value) return
 
-        viewModelScope.launch {
+        // Cancel any in-flight search so its results don't clobber this page.
+        requestJob?.cancel()
+
+        requestJob = viewModelScope.launch {
             _isLoadingMore.value = true
             val offset = currentOffset + SEARCH_PAGE_SIZE
 
@@ -238,41 +250,42 @@ class MainViewModel(
         _selectedTab.value = AppTab.DOWNLOADS
 
         viewModelScope.launch {
+            downloadSemaphore.withPermit {
+                val outputDir = getOutputDirectory()
 
-            val outputDir = getOutputDirectory()
+                repository.download(song, outputDir).collect { result ->
+                    updateTask(
+                        songId = result.songId,
+                        status = result.status,
+                        progress = result.progress,
+                        outputPath = result.outputPath,
+                        error = result.error
+                    )
 
-            repository.download(song, outputDir).collect { result ->
-                updateTask(
-                    songId = result.songId,
-                    status = result.status,
-                    progress = result.progress,
-                    outputPath = result.outputPath,
-                    error = result.error
-                )
-
-                if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
-                    val ext = result.outputPath.substringAfterLast('.', "m4a")
-                    val publicPath = com.mp3downloader.domain.service.saveToPublicDownloads(
-                        result.outputPath,
-                        "${song.title}.$ext"
-                    )
-                    updateTask(songId = result.songId, outputPath = publicPath ?: result.outputPath)
-                    val finalPath = publicPath ?: result.outputPath
-                    showSnackbar(
-                        message = "Descargado: ${song.title}",
-                        actionLabel = "Abrir",
-                        action = {
-                            com.mp3downloader.domain.service.openInFileManager(finalPath)
-                            _selectedTab.value = AppTab.DOWNLOADS
-                        }
-                    )
-                } else if (result.status == DownloadStatus.FAILED) {
-                    val errMsg = result.error ?: "Error desconocido"
-                    showSnackbar(
-                        message = "Descarga fallida: $errMsg",
-                        actionLabel = "Copiar",
-                        action = { com.mp3downloader.domain.service.copyTextToClipboard(errMsg) }
-                    )
+                    if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
+                        val ext = result.outputPath.substringAfterLast('.', "m4a")
+                        val publicPath = com.mp3downloader.domain.service.saveToPublicDownloads(
+                            result.outputPath,
+                            "${sanitizeFileName(song.title)}.$ext"
+                        )
+                        updateTask(songId = result.songId, outputPath = publicPath ?: result.outputPath)
+                        val finalPath = publicPath ?: result.outputPath
+                        showSnackbar(
+                            message = "Descargado: ${song.title}",
+                            actionLabel = "Abrir",
+                            action = {
+                                com.mp3downloader.domain.service.openInFileManager(finalPath)
+                                _selectedTab.value = AppTab.DOWNLOADS
+                            }
+                        )
+                    } else if (result.status == DownloadStatus.FAILED) {
+                        val errMsg = result.error ?: "Error desconocido"
+                        showSnackbar(
+                            message = "Descarga fallida: $errMsg",
+                            actionLabel = "Copiar",
+                            action = { com.mp3downloader.domain.service.copyTextToClipboard(errMsg) }
+                        )
+                    }
                 }
             }
         }
