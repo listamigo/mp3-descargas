@@ -710,14 +710,29 @@ def main():
     logger.info(f"Log level:   {LOG_LEVEL}")
     logger.info("═" * 50)
 
-    # Actualizar yt-dlp al arrancar
-    ensure_ytdlp_updated()
-
-    # Restaurar cookies persistentes (sobreviven a redeploys)
-    restore_cookies_from_env()
-
+    # ── Iniciar servidor INMEDIATAMENTE ────────────────────
+    # Railway hace healthcheck al contenedor casi al instante. Si el
+    # servidor no está escuchando, el deploy falla por timeout. Por eso
+    # arrancamos el servidor ANTES de ejecutar tareas lentas de inicio
+    # (version check, pip install, restore cookies).
     server = ThreadingHTTPServer((HOST, PORT), APIHandler)
     logger.info(f"Servidor escuchando en http://{HOST}:{PORT}")
+
+    # ── Background: tareas lentas de inicio ────────────────
+    import threading as _threading
+
+    def _startup_tasks():
+        try:
+            ensure_ytdlp_updated()
+        except Exception as e:
+            logger.warning(f"Startup task 'yt-dlp update' falló: {e}")
+        try:
+            restore_cookies_from_env()
+        except Exception as e:
+            logger.warning(f"Startup task 'restore cookies' falló: {e}")
+
+    bg = _threading.Thread(target=_startup_tasks, daemon=True)
+    bg.start()
 
     try:
         server.serve_forever()
