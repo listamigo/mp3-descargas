@@ -149,7 +149,7 @@ class PipedApiEngine : DownloadEngine {
 
         try {
             val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
-            val outputFile = File(outputDir, "$safeTitle.m4a")
+            val outputFile = uniqueOutputFile(outputDir, safeTitle, "m4a")
             activeDownloads[song.id] = true
 
             val response: HttpResponse = httpClient.get(audioUrl)
@@ -279,5 +279,17 @@ class PipedApiEngine : DownloadEngine {
     private fun extractVideoId(url: String): String {
         return url.removePrefix("/watch?v=").takeIf { it.length == 11 }
             ?: url.takeLast(11)
+    }
+}
+
+private fun uniqueOutputFile(outputDir: String, baseName: String, extension: String): File {
+    val dir = File(outputDir)
+    val base = File(dir, "$baseName.$extension")
+    if (!base.exists()) return base
+    var n = 1
+    while (true) {
+        val candidate = File(dir, "$baseName ($n).$extension")
+        if (!candidate.exists()) return candidate
+        n++
     }
 }
