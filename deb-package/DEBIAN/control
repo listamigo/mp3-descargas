@@ -1,8 +1,0 @@
-Package: mp3-downloader
-Version: 1.0.2
-Section: sound
-Priority: optional
-Architecture: amd64
-Depends: python3 (>= 3.11), yt-dlp, ffmpeg, alsa-utils
-Maintainer: elimdavid
-Description: MP3 Downloader — Desktop app for downloading YouTube audio
