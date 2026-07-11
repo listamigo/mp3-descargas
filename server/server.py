@@ -37,6 +37,10 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "/opt/mp3downloader/cookies/cookies.txt")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 LOG_DIR = os.environ.get("LOG_DIR", "/opt/mp3downloader/logs")
+# Versión de yt-dlp fijada para deploys deterministas. Cambiar YTDLP_VERSION
+# (y el pin del Dockerfile) en conjunto cuando se quiera actualizar. Esto
+# evita que un redeploy traiga una yt-dlp que rompa el bypass cookie-less.
+YTDLP_VERSION = os.environ.get("YTDLP_VERSION", "2026.6.9")
 LOG_FILE = os.environ.get("LOG_FILE", os.path.join(LOG_DIR, "server.log"))
 
 # ═══════════════════════════════════════════════════════════════
@@ -62,36 +66,54 @@ logger = logging.getLogger("mp3downloader")
 # ═══════════════════════════════════════════════════════════════
 
 def ensure_ytdlp_updated() -> None:
-    """Actualiza yt-dlp al iniciar el servidor (cada 24h máximo)."""
+    """Asegura la versión fijada de yt-dlp (deploys deterministas).
+
+    A diferencia de un `--upgrade` ciego, respeta YTDLP_VERSION para que los
+    redeploys no traigan una yt-dlp que rompa el bypass cookie-less ("inicia
+    sesión"). Solo reinstala si la versión actual difiere de la fijada.
+    """
     marker = os.path.join(LOG_DIR, ".ytdlp_updated")
-    should_update = True
+    current = _get_ytdlp_version()
+    if current == YTDLP_VERSION:
+        logger.debug(f"yt-dlp ya en versión fijada {YTDLP_VERSION}")
+        return
+
+    should_install = True
     if os.path.isfile(marker):
         mtime = os.path.getmtime(marker)
         age_hours = (datetime.now().timestamp() - mtime) / 3600
         if age_hours < 24:
-            should_update = False
+            # Ya se intentó recientemente; no martillear PyPI.
+            should_install = False
 
-    if should_update:
+    if should_install:
         try:
-            logger.info("Verificando actualización de yt-dlp...")
+            logger.info(f"Instalando yt-dlp=={YTDLP_VERSION} (actual: {current})...")
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "yt-dlp"],
-                capture_output=True, text=True, timeout=60
+                [sys.executable, "-m", "pip", "install", "--quiet", f"yt-dlp=={YTDLP_VERSION}"],
+                capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0:
-                # Touch marker
                 with open(marker, "w") as f:
                     f.write(datetime.now().isoformat())
-                logger.info(f"yt-dlp actualizado: {_get_ytdlp_version()}")
+                logger.info(f"yt-dlp instalado: {_get_ytdlp_version()}")
             else:
-                logger.warning(f"No se pudo actualizar yt-dlp: {result.stderr[:200]}")
+                logger.warning(f"No se pudo instalar yt-dlp=={YTDLP_VERSION}: {result.stderr[:200]}")
         except Exception as e:
-            logger.warning(f"Error al actualizar yt-dlp: {e}")
+            logger.warning(f"Error al instalar yt-dlp: {e}")
     else:
-        logger.debug(f"yt-dlp ya verificado hace menos de 24h ({_get_ytdlp_version()})")
+        logger.debug(f"yt-dlp actual {current} (diana {YTDLP_VERSION}); se revisará en <24h")
 
 
 def _get_ytdlp_version() -> str:
+    # Use the installed distribution version (normalized, e.g. "2026.6.9")
+    # so it matches YTDLP_VERSION exactly. yt-dlp --version prints a
+    # zero-padded form ("2026.06.09") that would never equal the pin.
+    try:
+        import importlib.metadata as importlib_metadata
+        return importlib_metadata.version("yt-dlp")
+    except Exception:
+        pass
     try:
         result = subprocess.run(
             ["yt-dlp", "--version"], capture_output=True, text=True, timeout=5

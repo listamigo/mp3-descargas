@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 user
 WORKDIR /home/user/app
 
-RUN echo "rebuild-2026-07-11T01-00" > /tmp/.rebuild
+RUN echo "rebuild-2026-07-11T01-pin-yt-dlp-2026.6.9" > /tmp/.rebuild
 
 COPY --chown=user:user server/server.py .
 COPY --chown=user:user server/download_engine.py .
@@ -17,7 +17,7 @@ COPY --chown=user:user server/utils/ ./utils/
 RUN mkdir -p /data/cookies /data/logs && chown -R user:user /data
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir yt-dlp
+    pip install --no-cache-dir yt-dlp==2026.6.9
 
 ENV PORT=8899
 ENV HOST=0.0.0.0
