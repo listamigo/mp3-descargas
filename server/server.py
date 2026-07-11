@@ -26,7 +26,14 @@ from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 from models.song import Song
-from download_engine import DownloadEngine, COOKIES_FILE
+from download_engine import (
+    DownloadEngine,
+    COOKIES_FILE,
+    ordered_clients,
+    get_client_health,
+    record_success,
+    record_failure,
+)
 
 # ═══════════════════════════════════════════════════════════════
 # Configuración desde variables de entorno
@@ -256,6 +263,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     "has_cookies": os.path.isfile(COOKIES_FILE),
                     "yt_dlp_version": _get_ytdlp_version(),
                     "uptime": _get_uptime(),
+                    "client_health": get_client_health(),
                 })
                 return
 
@@ -325,7 +333,7 @@ class APIHandler(BaseHTTPRequestHandler):
             downloaded = False
 
             # Step 1: Download audio + thumbnail + metadata via yt-dlp
-            for client in PLAYER_CLIENTS:
+            for client in ordered_clients():
                 if downloaded:
                     break
                 cmd = _base_cmd(client) + [
@@ -351,13 +359,16 @@ class APIHandler(BaseHTTPRequestHandler):
                     _, stderr = proc.communicate(timeout=120)
                     if proc.returncode == 0 and os.path.isfile(tmp_audio) and os.path.getsize(tmp_audio) > 1024:
                         downloaded = True
+                        record_success(client)
                     else:
                         last_err = stderr.decode(errors="replace")[:300]
+                        record_failure(client)
                         for f in [tmp_audio, tmp_thumb, tmp_mp3]:
                             if os.path.isfile(f):
                                 os.remove(f)
                 except Exception as e:
                     last_err = str(e)[:300]
+                    record_failure(client)
 
             if not downloaded:
                 self._json(502, {"error": f"yt-dlp failed: {last_err}"})

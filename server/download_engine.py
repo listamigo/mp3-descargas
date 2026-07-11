@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -8,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
+
+logger = logging.getLogger("mp3downloader.engine")
 
 from models.song import DownloadStatus, DownloadTask, Song
 from utils.helpers import sanitize_filename
@@ -61,6 +64,96 @@ PLAYER_CLIENTS = [
 # "client+token" (e.g. "web+XXXX"). Strongly recommended to avoid bot
 # challenges without depending on a session cookie that can expire.
 PO_TOKEN = os.environ.get("YT_PO_TOKEN")
+
+# ═══════════════════════════════════════════════════════════════
+# Circuit breaker por player client
+# ────────────────────────────────────────────────────────────────
+# YouTube reta los clientes de forma intermitente. En lugar de probar
+# siempre todos los clients en cada request (lento + más retos), abrimos
+# el circuito de un client tras N fallos consecutivos y lo saltamos
+# durante CB_OPEN_SECONDS, reintentándolo luego (half-open).
+_CB_FAIL_THRESHOLD = int(os.environ.get("CB_FAIL_THRESHOLD", "3"))
+_CB_OPEN_SECONDS = int(os.environ.get("CB_OPEN_SECONDS", "300"))
+
+
+class _ClientHealth:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.failures = 0
+        self.successes = 0
+        self.last_failure = 0.0
+        self.open_until = 0.0
+
+
+_client_health = {c: _ClientHealth() for c in PLAYER_CLIENTS}
+
+
+def _is_open(client: str) -> bool:
+    h = _client_health.get(client)
+    if not h:
+        return False
+    with h.lock:
+        return time.time() < h.open_until
+
+
+def record_success(client: str) -> None:
+    h = _client_health.get(client)
+    if not h:
+        return
+    with h.lock:
+        h.failures = 0
+        h.successes += 1
+        h.open_until = 0.0
+
+
+def record_failure(client: str) -> None:
+    h = _client_health.get(client)
+    if not h:
+        return
+    with h.lock:
+        h.failures += 1
+        h.last_failure = time.time()
+        if h.failures >= _CB_FAIL_THRESHOLD:
+            h.open_until = time.time() + _CB_OPEN_SECONDS
+            logger.warning(f"Circuito ABIERTO para client '{client}' ({h.failures} fallos)")
+
+
+def ordered_clients():
+    """Clients a probar: cerrados/half-open primero; los abiertos se saltan."""
+    return [c for c in PLAYER_CLIENTS if not _is_open(c)]
+
+
+def client_state(client: str) -> dict:
+    h = _client_health.get(client)
+    if not h:
+        return {"client": client, "status": "unknown"}
+    with h.lock:
+        now = time.time()
+        if now < h.open_until:
+            status = "open"
+        elif h.failures >= _CB_FAIL_THRESHOLD:
+            status = "half-open"
+        else:
+            status = "closed"
+        return {"client": client, "status": status, "failures": h.failures}
+
+
+def get_client_health() -> list:
+    return [client_state(c) for c in PLAYER_CLIENTS]
+
+
+# Señales de reto transitorio de YouTube: pequeño backoff antes de probar
+# el siguiente client en vez de insistir de inmediato.
+_TRANSIENT_HINTS = (
+    "429", "rate limit", "too many requests", "retry after",
+    "sign in to confirm", "bot", "confirm you",
+)
+
+
+def _is_transient(stderr: str) -> bool:
+    s = (stderr or "").lower()
+    return any(hint in s for hint in _TRANSIENT_HINTS)
+
 
 
 def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
@@ -126,7 +219,7 @@ class DownloadEngine:
         last_err = ""
         cookie_passes = [True, False] if os.path.isfile(COOKIES_FILE) else [False]
         for use_cookies in cookie_passes:
-            for client in PLAYER_CLIENTS:
+            for client in ordered_clients():
                 cmd = _base_cmd(client, cookies=use_cookies) + [
                     "-f", "bestaudio/best",
                     "--get-url", url
@@ -136,8 +229,12 @@ class DownloadEngine:
                     capture_output=True, text=True, timeout=30
                 )
                 if result.returncode == 0 and result.stdout.strip():
+                    record_success(client)
                     return result.stdout.strip().split("\n")[0].strip()
                 last_err = result.stderr[:200]
+                record_failure(client)
+                if _is_transient(last_err):
+                    time.sleep(2)
         raise RuntimeError(f"All player clients failed for {song.id}: {last_err}")
 
     def download(
@@ -171,7 +268,7 @@ class DownloadEngine:
         # Pass 2: without cookies (tv_embedded etc. bypass bot checks).
         cookie_passes = [True, False] if os.path.isfile(COOKIES_FILE) else [False]
         for use_cookies in cookie_passes:
-            for client in PLAYER_CLIENTS:
+            for client in ordered_clients():
                 for fmt in format_attempts:
                     if cancel_flag and cancel_flag():
                         if on_complete:
@@ -223,6 +320,7 @@ class DownloadEngine:
                         process.wait()
 
                         if process.returncode == 0:
+                            record_success(client)
                             if on_progress:
                                 on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
                             self._embed_metadata(output_path, thumb_path)
@@ -232,10 +330,12 @@ class DownloadEngine:
 
                         stderr = process.stderr.read() if process.stderr else ""
                         last_error = f"[{client}] Format '{fmt}' failed: {stderr[:200]}"
+                        record_failure(client)
                         print(f"[DL] {last_error}", flush=True)
 
                     except Exception as e:
                         last_error = f"[{client}] Format '{fmt}' exception: {e}"
+                        record_failure(client)
                         print(f"[DL] {last_error}", flush=True)
 
                     for f in [output_path, thumb_path, f"{base_path}.m4a", f"{base_path}.webm"]:
