@@ -49,9 +49,6 @@ kotlin {
             implementation(libs.ktor.okhttp)
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.androidx.activity.compose)
-            implementation(libs.jcodec)
-            implementation(libs.jcodec.android)
-            implementation(libs.mp4parser)
             implementation(libs.mp3agic)
         }
 
