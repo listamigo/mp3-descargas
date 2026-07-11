@@ -518,51 +518,48 @@ class APIHandler(BaseHTTPRequestHandler):
             pass
 
     def _proxy_preview(self, video_id: str, title: str) -> None:
-        """Preview de audio: cachea archivo MP3 temporal y sirve con headers
-        correctos para MediaPlayer (Content-Length obligatorio).
+        """Preview de audio con cache de archivos temporales.
 
-        Flujo:
-        1. Si existe en cache y es reciente → servir directo (rápido)
-        2. Si no → descargar con yt-dlp + ffmpeg → cachear → servir
+        Android MediaPlayer REQUIERE Content-Length para funcionar
+        correctamente con prepareAsync(). Por eso este método:
+        1. Descarga el audio completo a un archivo cache (yt-dlp → ffmpeg → MP3)
+        2. Lo sirve con Content-Length para que MediaPlayer pueda
+           determinar cuándo empezar a reproducir.
+        3. Los requests siguientes se sirven instantáneamente desde cache.
+
+        Archivos > 24h se limpian automáticamente.
         """
         import subprocess as _sp
 
         preview_path = self._get_preview_path(video_id)
-        cache_valid = False
 
-        # Verificar cache
+        # ── Cache hit: servir instantáneo con Content-Length ──
         if os.path.isfile(preview_path) and os.path.getsize(preview_path) > 1024:
             age_h = (time.time() - os.path.getmtime(preview_path)) / 3600
             if age_h < self.PREVIEW_CACHE_MAX_AGE_H:
-                cache_valid = True
+                file_size = os.path.getsize(preview_path)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self.end_headers()
+                    with open(preview_path, "rb") as f:
+                        while True:
+                            chunk = f.read(8192)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    logger.info(f"Preview desde cache: {video_id} ({file_size} bytes)")
+                    return
+                except BrokenPipeError:
+                    logger.debug(f"Cliente desconectado durante preview cache de {video_id}")
+                    return
+                except Exception as e:
+                    logger.warning(f"Error sirviendo preview cache: {e}")
 
-        if cache_valid:
-            # Servir desde cache — instantáneo
-            file_size = os.path.getsize(preview_path)
-            try:
-                self.send_response(200)
-                self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("Content-Length", str(file_size))
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Cache-Control", "public, max-age=3600")
-                self.end_headers()
-                with open(preview_path, "rb") as f:
-                    while True:
-                        chunk = f.read(8192)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                logger.info(f"Preview desde cache: {video_id} ({file_size} bytes)")
-                return
-            except BrokenPipeError:
-                logger.debug(f"Cliente desconectado durante preview cache de {video_id}")
-                return
-            except Exception as e:
-                logger.warning(f"Error sirviendo preview cache: {e}")
-                # Continuar con descarga fresh
-                cache_valid = False
-
-        # Descargar fresh — yt-dlp + ffmpeg → temp file
+        # ── Cache miss: descargar completo, cachear, luego servir ──
         yt_url = f"https://youtube.com/watch?v={video_id}"
         last_err = ""
         os.makedirs(self.PREVIEW_CACHE_DIR, exist_ok=True)
@@ -585,29 +582,24 @@ class APIHandler(BaseHTTPRequestHandler):
                 p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
                 p1.stdout.close()
 
-                # Leer primeros bytes para validar que hay audio
-                first = p2.stdout.read(8192)
-                if not first:
-                    stderr = b""
-                    if p1.stderr:
-                        stderr += (p1.stderr.read() or b"")
-                    if p2.stderr:
-                        stderr += (p2.stderr.read() or b"")
-                    last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
-                    record_failure(client)
-                    logger.warning(f"Preview falló (client {client}): {last_err}")
-                    try:
-                        p2.stdout.close()
-                    except Exception:
-                        pass
-                    try:
-                        p1.terminate(); p2.terminate()
-                    except Exception:
-                        pass
-                    continue
-
-                # Escribir todo a temp file
+                # Leer todo el output de ffmpeg al archivo temporal
                 with open(tmp_path, "wb") as f:
+                    first = p2.stdout.read(8192)
+                    if not first:
+                        stderr = b""
+                        if p1.stderr:
+                            stderr += (p1.stderr.read() or b"")
+                        if p2.stderr:
+                            stderr += (p2.stderr.read() or b"")
+                        last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
+                        record_failure(client)
+                        logger.warning(f"Preview falló (client {client}): {last_err}")
+                        try:
+                            p1.terminate(); p2.terminate()
+                        except Exception:
+                            pass
+                        continue
+
                     f.write(first)
                     while True:
                         chunk = p2.stdout.read(8192)
@@ -619,7 +611,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 os.replace(tmp_path, preview_path)
                 self._cleanup_preview_cache()
 
-                # Servir el archivo
+                # Servir el archivo completo con Content-Length
                 file_size = os.path.getsize(preview_path)
                 try:
                     self.send_response(200)
@@ -634,6 +626,7 @@ class APIHandler(BaseHTTPRequestHandler):
                             if not chunk:
                                 break
                             self.wfile.write(chunk)
+
                     record_success(client)
                     logger.info(f"Preview descargado y servido: {video_id} "
                                 f"(client={client}, {file_size} bytes)")
@@ -641,15 +634,6 @@ class APIHandler(BaseHTTPRequestHandler):
                 except BrokenPipeError:
                     logger.debug(f"Cliente desconectado durante preview de {video_id}")
                     return
-                finally:
-                    try:
-                        p2.stdout.close()
-                    except Exception:
-                        pass
-                    try:
-                        p1.terminate(); p2.terminate()
-                    except Exception:
-                        pass
             except Exception as e:
                 last_err = str(e)[:300]
                 record_failure(client)
@@ -661,6 +645,25 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
                 try:
                     p1.terminate(); p2.terminate()
+                except Exception:
+                    pass
+
+            finally:
+                # Asegurar limpieza de procesos en todos los casos
+                try:
+                    p1.terminate()
+                except Exception:
+                    pass
+                try:
+                    p2.terminate()
+                except Exception:
+                    pass
+                try:
+                    p1.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    p2.stdout.close()
                 except Exception:
                     pass
 
