@@ -7,7 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir yt-dlp
 
 WORKDIR /app
-COPY . .
+# Copia explícita solo del backend móvil (sin arrastrar desktop/ ni composeApp/)
+COPY server/server.py .
+COPY server/download_engine.py .
+COPY server/models/ ./models/
+COPY server/utils/ ./utils/
 
 # Directory for YouTube cookies (mounted as volume or created at runtime)
 RUN mkdir -p /app/cookies
