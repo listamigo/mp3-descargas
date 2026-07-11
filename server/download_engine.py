@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -12,6 +13,30 @@ from models.song import DownloadStatus, DownloadTask, Song
 from utils.helpers import sanitize_filename
 
 YTDLP_TIMEOUT = 60
+
+# Thread-safe TTL cache for search results so repeated queries don't hit
+# yt-dlp/YouTube on every request (cheaper + lowers bot-challenge risk).
+SEARCH_CACHE_TTL = int(os.environ.get("SEARCH_CACHE_TTL", "600"))
+_search_cache_lock = threading.Lock()
+_search_cache: dict = {}
+
+
+def _search_cache_get(key):
+    with _search_cache_lock:
+        item = _search_cache.get(key)
+        if not item:
+            return None
+        ts, value = item
+        if time.time() - ts > SEARCH_CACHE_TTL:
+            _search_cache.pop(key, None)
+            return None
+        return value
+
+
+def _search_cache_put(key, value):
+    with _search_cache_lock:
+        _search_cache[key] = (time.time(), value)
+
 
 # Ruta del archivo de cookies — configurable via env var
 COOKIES_FILE = os.environ.get(
@@ -60,6 +85,11 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
 class DownloadEngine:
 
     def search(self, query: str, max_results: int = 20, offset: int = 0) -> List[Song]:
+        cache_key = (query, max_results, offset)
+        cached = _search_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         # yt-dlp has no native offset, so we request up to (offset + max_results)
         # and slice out the page we need.
         total = max_results + max(offset, 0)
@@ -87,7 +117,9 @@ class DownloadEngine:
                 duration=int(entry.get("duration") or 0),
                 thumbnail_url=f"https://i.ytimg.com/vi/{entry['id']}/default.jpg",
             ))
-        return songs[offset:offset + max_results]
+        sliced = songs[offset:offset + max_results]
+        _search_cache_put(cache_key, sliced)
+        return sliced
 
     def get_audio_url(self, song: Song) -> str:
         url = f"https://youtube.com/watch?v={song.id}"
