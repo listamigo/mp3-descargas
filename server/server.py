@@ -518,14 +518,19 @@ class APIHandler(BaseHTTPRequestHandler):
             pass
 
     def _proxy_preview(self, video_id: str, title: str) -> None:
-        """Preview de audio con cache de archivos temporales.
+        """Preview con streaming progresivo (chunked) + cache.
 
-        Android MediaPlayer REQUIERE Content-Length para funcionar
-        correctamente con prepareAsync(). Por eso este método:
-        1. Descarga el audio completo a un archivo cache (yt-dlp → ffmpeg → MP3)
-        2. Lo sirve con Content-Length para que MediaPlayer pueda
-           determinar cuándo empezar a reproducir.
-        3. Los requests siguientes se sirven instantáneamente desde cache.
+        DOS MODOS:
+
+        1. Cache hit → sirve instantáneo con Content-Length (segundo play en
+           adelante).
+
+        2. Cache miss → streaming chunked: envía headers inmediatamente y
+           comienza a mandar datos tan pronto como ffmpeg produce el primer
+           chunk. Android MediaPlayer empieza a reproducir en cuanto tiene
+           buffer suficiente (~2-5 segundos), sin esperar la descarga
+           completa. Simultáneamente se guarda el archivo en cache para
+           requests futuros.
 
         Archivos > 24h se limpian automáticamente.
         """
@@ -559,7 +564,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.warning(f"Error sirviendo preview cache: {e}")
 
-        # ── Cache miss: descargar completo, cachear, luego servir ──
+        # ── Cache miss: streaming chunked + cache simultáneo ──
         yt_url = f"https://youtube.com/watch?v={video_id}"
         last_err = ""
         os.makedirs(self.PREVIEW_CACHE_DIR, exist_ok=True)
@@ -582,58 +587,87 @@ class APIHandler(BaseHTTPRequestHandler):
                 p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
                 p1.stdout.close()
 
-                # Leer todo el output de ffmpeg al archivo temporal
-                with open(tmp_path, "wb") as f:
-                    first = p2.stdout.read(8192)
-                    if not first:
-                        stderr = b""
-                        if p1.stderr:
-                            stderr += (p1.stderr.read() or b"")
-                        if p2.stderr:
-                            stderr += (p2.stderr.read() or b"")
-                        last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
-                        record_failure(client)
-                        logger.warning(f"Preview falló (client {client}): {last_err}")
-                        try:
-                            p1.terminate(); p2.terminate()
-                        except Exception:
-                            pass
-                        continue
+                # Leer primer chunk para validar que hay audio
+                first = p2.stdout.read(8192)
+                if not first:
+                    stderr = b""
+                    if p1.stderr:
+                        stderr += (p1.stderr.read() or b"")
+                    if p2.stderr:
+                        stderr += (p2.stderr.read() or b"")
+                    last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
+                    record_failure(client)
+                    logger.warning(f"Preview falló (client {client}): {last_err}")
+                    try:
+                        p1.terminate(); p2.terminate()
+                    except Exception:
+                        pass
+                    continue
 
-                    f.write(first)
-                    while True:
-                        chunk = p2.stdout.read(8192)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                # ── Enviar headers INMEDIATAMENTE ──
+                # Usamos Transfer-Encoding: chunked con HTTP/1.1 para que
+                # Android MediaPlayer reciba datos progresivamente y pueda
+                # empezar a reproducir con solo ~2-5 segundos de buffer,
+                # sin esperar la descarga completa.
+                self.protocol_version = "HTTP/1.1"
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Cache-Control", "no-cache")
+                self._cors_headers()
+                self.end_headers()
 
-                # Renombrar atómicamente al path final
-                os.replace(tmp_path, preview_path)
-                self._cleanup_preview_cache()
-
-                # Servir el archivo completo con Content-Length
-                file_size = os.path.getsize(preview_path)
                 try:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "audio/mpeg")
-                    self.send_header("Content-Length", str(file_size))
-                    self.send_header("Accept-Ranges", "bytes")
-                    self.send_header("Cache-Control", "public, max-age=3600")
-                    self.end_headers()
-                    with open(preview_path, "rb") as f:
+                    # Primer chunk
+                    self.wfile.write(f"{len(first):x}\r\n".encode())
+                    self.wfile.write(first)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+
+                    # Tee: escribir a cache simultáneamente
+                    cache_file = open(tmp_path, "wb")
+                    cache_file.write(first)
+                    total_bytes = len(first)
+
+                    try:
                         while True:
-                            chunk = f.read(8192)
+                            chunk = p2.stdout.read(8192)
                             if not chunk:
                                 break
+                            # Chunked encoding
+                            self.wfile.write(f"{len(chunk):x}\r\n".encode())
                             self.wfile.write(chunk)
+                            self.wfile.write(b"\r\n")
+                            self.wfile.flush()
+                            # Cache
+                            cache_file.write(chunk)
+                            total_bytes += len(chunk)
+                    finally:
+                        cache_file.close()
+
+                    # Chunk final
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+
+                    # Renombrar temp a cache (atómico)
+                    os.replace(tmp_path, preview_path)
+                    self._cleanup_preview_cache()
 
                     record_success(client)
-                    logger.info(f"Preview descargado y servido: {video_id} "
-                                f"(client={client}, {file_size} bytes)")
+                    logger.info(f"Preview streaming completado: {video_id} "
+                                f"(client={client}, {total_bytes} bytes)")
                     return
+
                 except BrokenPipeError:
                     logger.debug(f"Cliente desconectado durante preview de {video_id}")
+                    # Guardar cache aunque el cliente se desconecte
+                    try:
+                        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
+                            os.replace(tmp_path, preview_path)
+                    except Exception:
+                        pass
                     return
+
             except Exception as e:
                 last_err = str(e)[:300]
                 record_failure(client)
@@ -649,7 +683,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
 
             finally:
-                # Asegurar limpieza de procesos en todos los casos
+                # Asegurar limpieza de procesos
                 try:
                     p1.terminate()
                 except Exception:
