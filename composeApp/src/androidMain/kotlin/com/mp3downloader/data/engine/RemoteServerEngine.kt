@@ -47,9 +47,10 @@ class RemoteServerEngine : DownloadEngine {
     private val httpClient = HttpClient {
         install(HttpTimeout) {
             // Render free tier can take 30-60s for cold start
-            requestTimeoutMillis = 180_000
-            connectTimeoutMillis = 60_000
-            socketTimeoutMillis = 120_000
+            // Aumentado para mixes largos: 10 min para request, 10 min para socket
+            requestTimeoutMillis = 600_000
+            connectTimeoutMillis = 120_000
+            socketTimeoutMillis = 600_000
         }
     }
 
@@ -125,8 +126,8 @@ class RemoteServerEngine : DownloadEngine {
             val videoId = java.net.URLEncoder.encode(song.id, "UTF-8")
             val audioUrl = java.net.URL("$server/api/download?videoId=$videoId&title=${java.net.URLEncoder.encode(song.title, "UTF-8")}")
             val connection = audioUrl.openConnection() as java.net.HttpURLConnection
-            connection.connectTimeout = 60_000
-            connection.readTimeout = 180_000
+            connection.connectTimeout = 120_000
+            connection.readTimeout = 600_000
             connection.setRequestProperty("User-Agent",
                 "Mozilla/5.0 (Android 14; Mobile; rv:130.0) Gecko/130.0 Firefox/130.0")
             connection.instanceFollowRedirects = true

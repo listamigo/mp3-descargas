@@ -72,6 +72,10 @@ class MainViewModel(
     private val _downloads = MutableStateFlow<List<DownloadTask>>(emptyList())
     val downloads: StateFlow<List<DownloadTask>> = _downloads.asStateFlow()
 
+    /** Número de descargas actualmente en progreso (para Foreground Service). */
+    private val _foregroundDownloadsCount = MutableStateFlow(0)
+    val foregroundDownloadsCount: StateFlow<Int> = _foregroundDownloadsCount.asStateFlow()
+
     private val _previewLoading = MutableStateFlow<String?>(null)
     val previewLoading: StateFlow<String?> = _previewLoading.asStateFlow()
 
@@ -264,44 +268,52 @@ class MainViewModel(
 
         _selectedTab.value = AppTab.DOWNLOADS
 
+        // Notificar al Foreground Service que empieza una descarga
+        _foregroundDownloadsCount.value = _foregroundDownloadsCount.value + 1
+
         viewModelScope.launch {
-            downloadSemaphore.withPermit {
-                val outputDir = getOutputDirectory()
+            try {
+                downloadSemaphore.withPermit {
+                    val outputDir = getOutputDirectory()
 
-                repository.download(song, outputDir).collect { result ->
-                    updateTask(
-                        songId = result.songId,
-                        status = result.status,
-                        progress = result.progress,
-                        outputPath = result.outputPath,
-                        error = result.error
-                    )
+                    repository.download(song, outputDir).collect { result ->
+                        updateTask(
+                            songId = result.songId,
+                            status = result.status,
+                            progress = result.progress,
+                            outputPath = result.outputPath,
+                            error = result.error
+                        )
 
-                    if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
-                        val ext = result.outputPath.substringAfterLast('.', "m4a")
-                        val publicPath = com.mp3downloader.domain.service.saveToPublicDownloads(
-                            result.outputPath,
-                            "${sanitizeFileName(song.title)}.$ext"
-                        )
-                        updateTask(songId = result.songId, outputPath = publicPath ?: result.outputPath)
-                        val finalPath = publicPath ?: result.outputPath
-                        showSnackbar(
-                            message = "Descargado: ${song.title}",
-                            actionLabel = "Abrir",
-                            action = {
-                                com.mp3downloader.domain.service.openInFileManager(finalPath)
-                                _selectedTab.value = AppTab.DOWNLOADS
-                            }
-                        )
-                    } else if (result.status == DownloadStatus.FAILED) {
-                        val errMsg = result.error ?: "Error desconocido"
-                        showSnackbar(
-                            message = "Descarga fallida: $errMsg",
-                            actionLabel = "Copiar",
-                            action = { com.mp3downloader.domain.service.copyTextToClipboard(errMsg) }
-                        )
+                        if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
+                            val ext = result.outputPath.substringAfterLast('.', "m4a")
+                            val publicPath = com.mp3downloader.domain.service.saveToPublicDownloads(
+                                result.outputPath,
+                                "${sanitizeFileName(song.title)}.$ext"
+                            )
+                            updateTask(songId = result.songId, outputPath = publicPath ?: result.outputPath)
+                            val finalPath = publicPath ?: result.outputPath
+                            showSnackbar(
+                                message = "Descargado: ${song.title}",
+                                actionLabel = "Abrir",
+                                action = {
+                                    com.mp3downloader.domain.service.openInFileManager(finalPath)
+                                    _selectedTab.value = AppTab.DOWNLOADS
+                                }
+                            )
+                        } else if (result.status == DownloadStatus.FAILED) {
+                            val errMsg = result.error ?: "Error desconocido"
+                            showSnackbar(
+                                message = "Descarga fallida: $errMsg",
+                                actionLabel = "Copiar",
+                                action = { com.mp3downloader.domain.service.copyTextToClipboard(errMsg) }
+                            )
+                        }
                     }
                 }
+            } finally {
+                // Notificar al Foreground Service que terminó una descarga
+                _foregroundDownloadsCount.value = (_foregroundDownloadsCount.value - 1).coerceAtLeast(0)
             }
         }
     }
@@ -312,7 +324,11 @@ class MainViewModel(
         }
         if (failedTask != null) {
             _downloads.value = _downloads.value.filter { it.song.id != songId }
-            download(failedTask.song)
+            // Pequeño delay para dar tiempo a que la conexión se recupere
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(1000)
+                download(failedTask.song)
+            }
         }
     }
 

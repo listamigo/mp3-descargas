@@ -327,160 +327,183 @@ class APIHandler(BaseHTTPRequestHandler):
             "message": f"Cookies saved ({len(body)} bytes)",
         })
 
-    # ─── Proxy download (streaming) ──────────────────────────
-    def _proxy_download(self, video_id: str, title: str) -> None:
-        import signal as _signal
-        import tempfile
+    # ─── Proxy download (streaming progresivo) ────────────────
+    # AHORA usa pipeline yt-dlp | ffmpeg igual que preview, enviando datos
+    # al cliente progresivamente mientras se procesan. Ya NO espera a que
+    # yt-dlp termine de descargar todo el mix antes de empezar a enviar.
+    # Para mixes largos (1h+), el cliente empieza a recibir datos en ~5-10s.
+    DOWNLOAD_CACHE_DIR = os.path.join(
+        os.environ.get("LOG_DIR", "/opt/mp3downloader/logs"), "download_cache"
+    )
+    DOWNLOAD_CACHE_MAX_AGE_H = 48
+    DOWNLOAD_CACHE_MAX_FILES = 30
 
-        yt_url = f"https://youtube.com/watch?v={video_id}"
-        tmp_dir = tempfile.mkdtemp(prefix="mp3dl_")
-        tmp_audio = os.path.join(tmp_dir, f"{video_id}.m4a")
-        tmp_thumb = os.path.join(tmp_dir, f"{video_id}.jpg")
-        tmp_mp3 = os.path.join(tmp_dir, f"{video_id}.mp3")
+    def _get_download_path(self, video_id: str) -> str:
+        safe_id = video_id.replace("/", "_").replace("..", "_")
+        return os.path.join(self.DOWNLOAD_CACHE_DIR, f"{safe_id}.mp3")
 
+    def _cleanup_download_cache(self) -> None:
         try:
-            from download_engine import _base_cmd, PLAYER_CLIENTS
+            if not os.path.isdir(self.DOWNLOAD_CACHE_DIR):
+                return
+            files = [
+                (os.path.join(self.DOWNLOAD_CACHE_DIR, f),
+                 os.path.getmtime(os.path.join(self.DOWNLOAD_CACHE_DIR, f)))
+                for f in os.listdir(self.DOWNLOAD_CACHE_DIR) if f.endswith(".mp3")
+            ]
+            if len(files) <= self.DOWNLOAD_CACHE_MAX_FILES:
+                return
+            files.sort(key=lambda x: x[1])
+            for path, _ in files[:len(files) - self.DOWNLOAD_CACHE_MAX_FILES]:
+                try: os.remove(path)
+                except Exception: pass
+        except Exception:
+            pass
 
-            last_err = ""
-            downloaded = False
+    def _proxy_download(self, video_id: str, title: str) -> None:
+        import subprocess as _sp
 
-            # Step 1: Download audio + thumbnail + metadata via yt-dlp
-            for client in ordered_clients():
-                if downloaded:
-                    break
-                cmd = _base_cmd(client) + [
-                    "-f", "best",
-                    "-o", tmp_audio,
-                    "--no-playlist",
-                    "--no-part",
-                    # Metadata flags
-                    "--add-metadata",
-                    "--write-thumbnail", "--convert-thumbnails", "jpg",
-                    "--parse-metadata", f"title:{title}",
-                    "--parse-metadata", "artist:%(channel)s",
-                    "--parse-metadata", "album:%(playlist_title|)s",
-                    "--parse-metadata", "genre:YouTube Audio",
-                    "--parse-metadata", "comment:%(description).200s",
-                    yt_url,
-                ]
+        download_path = self._get_download_path(video_id)
+
+        # ── Cache hit: servir instantáneo ──
+        if os.path.isfile(download_path) and os.path.getsize(download_path) > 1024:
+            age_h = (time.time() - os.path.getmtime(download_path)) / 3600
+            if age_h < self.DOWNLOAD_CACHE_MAX_AGE_H:
+                file_size = os.path.getsize(download_path)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Content-Length", str(file_size))
+                    self._cors_headers()
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self.send_header("X-Video-Id", video_id)
+                    self.end_headers()
+                    with open(download_path, "rb") as f:
+                        while True:
+                            chunk = f.read(8192)
+                            if not chunk: break
+                            self.wfile.write(chunk)
+                    logger.info(f"Download desde cache: {video_id} ({file_size} bytes)")
+                    return
+                except BrokenPipeError:
+                    logger.debug(f"Cliente desconectado durante download cache de {video_id}")
+                    return
+                except Exception as e:
+                    logger.warning(f"Error sirviendo download cache: {e}")
+
+        # ── Cache miss: pipeline streaming ──
+        yt_url = f"https://youtube.com/watch?v={video_id}"
+        last_err = ""
+        os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
+
+        for client in ordered_clients():
+            yt_cmd = _base_cmd(client) + [
+                "-o", "-",
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                "--no-playlist", "--no-part",
+                yt_url,
+            ]
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", "-",
+                "-codec:a", "libmp3lame", "-q:a", "0",
+                "-id3v2_version", "3",
+                "-f", "mp3", "-",
+            ]
+
+            tmp_path = download_path + ".tmp"
+            try:
+                p1 = _sp.Popen(yt_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                p1.stdout.close()
+
+                first = p2.stdout.read(8192)
+                if not first:
+                    stderr = b""
+                    if p1.stderr: stderr += (p1.stderr.read() or b"")
+                    if p2.stderr: stderr += (p2.stderr.read() or b"")
+                    last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
+                    record_failure(client)
+                    logger.warning(f"Download falló (client {client}): {last_err}")
+                    try: p1.terminate(); p2.terminate()
+                    except Exception: pass
+                    continue
+
+                # Headers inmediatos (chunked — no sabemos el tamaño final aún)
+                self.protocol_version = "HTTP/1.1"
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Video-Id", video_id)
+                self._cors_headers()
+                self.end_headers()
 
                 try:
-                    proc = subprocess.Popen(
-                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                    )
-                    _, stderr = proc.communicate(timeout=120)
-                    if proc.returncode == 0 and os.path.isfile(tmp_audio) and os.path.getsize(tmp_audio) > 1024:
-                        downloaded = True
-                        record_success(client)
-                    else:
-                        last_err = stderr.decode(errors="replace")[:300]
-                        record_failure(client)
-                        for f in [tmp_audio, tmp_thumb, tmp_mp3]:
-                            if os.path.isfile(f):
-                                os.remove(f)
-                except Exception as e:
-                    last_err = str(e)[:300]
-                    record_failure(client)
+                    # Primer chunk
+                    self.wfile.write(f"{len(first):x}\r\n".encode())
+                    self.wfile.write(first)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
 
-            if not downloaded:
-                self._json(502, {"error": f"yt-dlp failed: {last_err}"})
-                return
+                    cache_file = open(tmp_path, "wb")
+                    cache_file.write(first)
+                    total_bytes = len(first)
 
-            # Find the thumbnail (yt-dlp may name it differently)
-            thumb_file = None
-            for ext in ["jpg", "png", "webp"]:
-                candidate = os.path.join(tmp_dir, f"{video_id}.{ext}")
-                if os.path.isfile(candidate):
-                    thumb_file = candidate
-                    break
-            # Also check for files with suffixes like .m4a.jpg
-            if not thumb_file:
-                for f in os.listdir(tmp_dir):
-                    if f.endswith((".jpg", ".png", ".webp")) and video_id in f:
-                        thumb_file = os.path.join(tmp_dir, f)
-                        break
-
-            # Step 2: Convert to MP3 + embed thumbnail via ffmpeg
-            try:
-                ffmpeg_input = ["-i", tmp_audio]
-                ffmpeg_maps = ["-map", "0:a", "-map_metadata", "0"]
-
-                # Embed thumbnail as cover art if available
-                if thumb_file and os.path.isfile(thumb_file):
-                    ffmpeg_input.extend(["-i", thumb_file])
-                    ffmpeg_maps = [
-                        "-map", "0:a", "-map", "1:0",
-                        "-map_metadata", "0",
-                    ]
-
-                ffmpeg_cmd = ["ffmpeg", "-y"] + ffmpeg_input + ffmpeg_maps + [
-                    "-codec:a", "libmp3lame", "-q:a", "0",
-                    "-id3v2_version", "3",
-                ]
-
-                # Add cover art metadata if thumbnail exists
-                if thumb_file and os.path.isfile(thumb_file):
-                    ffmpeg_cmd.extend([
-                        "-metadata:s:v", "title=Album cover",
-                        "-metadata:s:v", "comment=Cover (front)",
-                        "-disposition:v", "attached_pic",
-                    ])
-
-                ffmpeg_cmd.append(tmp_mp3)
-
-                proc = subprocess.Popen(
-                    ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
-                _, stderr = proc.communicate(timeout=120)
-                if proc.returncode != 0 or not os.path.isfile(tmp_mp3):
-                    logger.warning(f"ffmpeg conversion failed, sending M4A: {stderr.decode(errors='replace')[:200]}")
-                    tmp_mp3 = tmp_audio  # fallback to M4A
-            except Exception as e:
-                logger.warning(f"ffmpeg error, sending M4A: {e}")
-                tmp_mp3 = tmp_audio
-
-            # Step 3: Stream the result
-            is_mp3 = tmp_mp3.endswith(".mp3")
-            content_type = "audio/mpeg" if is_mp3 else "audio/mp4"
-
-            file_size = os.path.getsize(tmp_mp3)
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self._cors_headers()
-            self.send_header("Content-Length", str(file_size))
-            self.send_header("Connection", "close")
-            self.send_header("X-Video-Id", video_id)
-            self.end_headers()
-
-            sent = 0
-            with open(tmp_mp3, "rb") as f:
-                while True:
-                    chunk = f.read(8192)
-                    if not chunk:
-                        break
                     try:
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-                        sent += len(chunk)
-                    except BrokenPipeError:
-                        break
+                        while True:
+                            chunk = p2.stdout.read(8192)
+                            if not chunk: break
+                            self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                            self.wfile.write(chunk)
+                            self.wfile.write(b"\r\n")
+                            self.wfile.flush()
+                            cache_file.write(chunk)
+                            total_bytes += len(chunk)
+                    finally:
+                        cache_file.close()
 
-            logger.info(f"Descarga completada: {video_id} ({sent} bytes, {'MP3' if is_mp3 else 'M4A'})")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
 
-        except BrokenPipeError:
-            logger.debug(f"Cliente desconectado durante descarga de {video_id}")
-        except Exception as e:
-            logger.error(f"Error en proxy download para {video_id}: {e}")
-        finally:
-            # Cleanup temp files
-            try:
-                for f in os.listdir(tmp_dir):
-                    fp = os.path.join(tmp_dir, f)
-                    if os.path.isfile(fp):
-                        os.remove(fp)
-                os.rmdir(tmp_dir)
-            except Exception:
-                pass
+                    os.replace(tmp_path, download_path)
+                    self._cleanup_download_cache()
+
+                    record_success(client)
+                    logger.info(f"Download streaming completado: {video_id} "
+                                f"(client={client}, {total_bytes} bytes)")
+                    return
+
+                except BrokenPipeError:
+                    logger.debug(f"Cliente desconectado durante download de {video_id}")
+                    try:
+                        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
+                            os.replace(tmp_path, download_path)
+                    except Exception: pass
+                    return
+
+            except Exception as e:
+                last_err = str(e)[:300]
+                record_failure(client)
+                logger.warning(f"Download excepción (client {client}): {e}")
+                try:
+                    if os.path.exists(tmp_path): os.remove(tmp_path)
+                except Exception: pass
+                try: p1.terminate(); p2.terminate()
+                except Exception: pass
+            finally:
+                try: p1.terminate()
+                except Exception: pass
+                try: p2.terminate()
+                except Exception: pass
+                try: p1.stdout.close()
+                except Exception: pass
+                try: p2.stdout.close()
+                except Exception: pass
+
+        try:
+            self._json(502, {"error": f"download failed: {last_err}"})
+        except Exception:
+            pass
 
     # ─── Preview con cache de archivos temporales ───────────
     # Descarga audio a un temp file, lo cachea, y sirve con Content-Length

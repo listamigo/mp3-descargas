@@ -12,7 +12,7 @@ import org.koin.dsl.module
 val appModule: Module = module {
     single<SongRepository> { SongRepositoryImpl(get()) }
     single<HistoryRepository> { FileHistoryRepository(provideStorageDirectory()) }
-    factory { MainViewModel(get(), get(), get()) }
+    single { MainViewModel(get(), get(), get()) }
 }
 
 val sharedModules = listOf(platformModule, appModule)
