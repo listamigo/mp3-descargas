@@ -8,6 +8,8 @@ import re
 import subprocess
 import threading
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -17,6 +19,21 @@ from models.song import DownloadStatus, DownloadTask, Song
 from utils.helpers import sanitize_filename
 
 YTDLP_TIMEOUT = 60
+
+# ═══════════════════════════════════════════════════════════════
+# Invidious fallback — cuando yt-dlp falla por bot-detection
+# ────────────────────────────────────────────────────────────────
+INVIDIOUS_INSTANCES = [
+    "https://inv.zoomerville.com",
+    "https://invidious.slipfox.xyz",
+    "https://invidious.projectsegfau.lt",
+    "https://invidious.protokolla.fi",
+    "https://invidious.flokinet.to",
+    "https://vid.puffyan.us",
+    "https://iv.ggtyler.dev",
+]
+_invidious_active = None  # instance that worked last
+_invidious_lock = threading.Lock()
 
 # ═══════════════════════════════════════════════════════════════
 # User-Agent rotation — YouTube bloquea UAs estáticos de bots
@@ -218,6 +235,126 @@ def _clear_backoff(client: str) -> None:
     _backoff_counter.pop(client, None)
 
 
+# ═══════════════════════════════════════════════════════════════
+# Invidious fallback — funciona sin cookies/proxy
+# ────────────────────────────────────────────────────────────────
+
+def _invidious_request(url: str, timeout: int = 15) -> dict | str | None:
+    """GET request a instancia Invidious, retorna JSON o None."""
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+            if data.strip().startswith("<"):
+                return None  # HTML = instance bloqueada
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                return data
+    except Exception as e:
+        logger.debug(f"Invidious request failed ({url}): {e}")
+        return None
+
+
+def _resolve_invidious_instance() -> str | None:
+    """Encuentra una instancia Invidious que responda."""
+    global _invidious_active
+    with _invidious_lock:
+        # Si ya sabemos cuál funciona, probar esa primero
+        if _invidious_active:
+            test = _invidious_request(f"{_invidious_active}/api/v1/stats", timeout=5)
+            if test:
+                return _invidious_active
+            _invidious_active = None
+
+        for instance in INVIDIOUS_INSTANCES:
+            test = _invidious_request(f"{instance}/api/v1/stats", timeout=5)
+            if test:
+                _invidious_active = instance
+                logger.info(f"Invidious instance activa: {instance}")
+                return instance
+
+        logger.warning("Ninguna instancia Invidious disponible")
+        return None
+
+
+def invidious_get_audio_url(video_id: str) -> str | None:
+    """Obtiene URL de audio vía Invidious. Retorna None si falla."""
+    instance = _resolve_invidious_instance()
+    if not instance:
+        return None
+
+    data = _invidious_request(f"{instance}/api/v1/videos/{video_id}", timeout=20)
+    if not data or not isinstance(data, dict):
+        return None
+
+    formats = data.get("adaptiveFormats") or data.get("formatStreams") or []
+    # Buscar mejor audio m4a/mp4
+    audio_formats = [
+        f for f in formats
+        if "audio" in (f.get("type") or f.get("mimeType") or "")
+    ]
+    if not audio_formats:
+        audio_formats = formats  # fallback a cualquier formato
+
+    if not audio_formats:
+        return None
+
+    # Ordenar por bitrate descendente
+    audio_formats.sort(key=lambda f: f.get("bitrate") or 0, reverse=True)
+    url = audio_formats[0].get("url")
+    if url and url.startswith("https://"):
+        return url
+    return None
+
+
+def invidious_download(video_id: str, output_path: str,
+                       on_progress: Optional[Callable] = None) -> bool:
+    """Descarga audio vía Invidious. Retorna True si éxito."""
+    audio_url = invidious_get_audio_url(video_id)
+    if not audio_url:
+        return False
+
+    try:
+        if on_progress:
+            on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "")
+
+        req = urllib.request.Request(audio_url, headers={
+            "User-Agent": random.choice(USER_AGENTS),
+        })
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 8192
+            tmp_path = output_path + ".tmp"
+
+            with open(tmp_path, "wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress and total > 0:
+                        on_progress(DownloadStatus.DOWNLOADING, downloaded / total, "", "")
+
+            os.replace(tmp_path, output_path)
+            if on_progress:
+                on_progress(DownloadStatus.COMPLETED, 1.0, "", "")
+            return True
+
+    except Exception as e:
+        logger.warning(f"Invidious download failed for {video_id}: {e}")
+        try:
+            os.remove(output_path + ".tmp")
+        except Exception:
+            pass
+        return False
+
+
 
 def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     """Return base yt-dlp args common to all invocations.
@@ -322,6 +459,13 @@ class DownloadEngine:
                     logger.info(f"Backoff {backoff:.1f}s para {client} (transitorio)")
                     time.sleep(backoff)
                     _record_backoff(client)
+
+        # Fallback: intentar vía Invidious
+        logger.info(f"yt-dlp falló para {song.id}, intentando Invidious...")
+        invidious_url = invidious_get_audio_url(song.id)
+        if invidious_url:
+            return invidious_url
+
         raise RuntimeError(f"All player clients failed for {song.id}: {last_err}")
 
     def download(
@@ -439,8 +583,26 @@ class DownloadEngine:
                         if os.path.isfile(f):
                             os.remove(f)
 
+        # Fallback: intentar descarga vía Invidious
+        logger.info(f"yt-dlp falló para {song.id}, intentando Invidious fallback...")
+        if on_progress:
+            on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "Invidious fallback")
+
+        def _invidious_progress(status, pct, speed, total):
+            if on_progress:
+                on_progress(status, pct, speed, total)
+
+        success = invidious_download(song.id, output_path, on_progress=_invidious_progress)
+        if success:
+            if on_progress:
+                on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
+            self._embed_metadata(output_path, thumb_path)
+            if on_complete:
+                on_complete(output_path, None)
+            return
+
         if on_complete:
-            on_complete(None, last_error or "All download formats failed")
+            on_complete(None, last_error or "All download formats failed (yt-dlp + Invidious)")
 
     def _embed_metadata(self, output_path: str, thumb_path: str) -> None:
         if not os.path.isfile(thumb_path):
