@@ -38,11 +38,8 @@ class MainActivity : ComponentActivity() {
 
         setContent { App() }
 
-        // Observar el conteo de descargas activas para gestionar el
-        // Foreground Service. Cuando hay al menos una descarga, iniciamos
-        // el servicio para mantener la CPU activa y evitar que Android
-        // suspenda la conexión. Cuando todas terminan, lo detenemos.
         observeDownloadService()
+        observeDownloadCompletions()
     }
 
     override fun onPause() {
@@ -58,7 +55,6 @@ class MainActivity : ComponentActivity() {
     private fun observeDownloadService() {
         lifecycleScope.launch {
             try {
-                // Obtenemos el ViewModel desde Koin para observar el conteo
                 val viewModel = get<MainViewModel>(MainViewModel::class.java)
                 viewModel.foregroundDownloadsCount.collectLatest { count ->
                     Log.d(TAG, "Descargas activas: $count")
@@ -70,6 +66,29 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error al observar descargas: ${e.message}")
+            }
+        }
+    }
+
+    private fun observeDownloadCompletions() {
+        lifecycleScope.launch {
+            try {
+                val viewModel = get<MainViewModel>(MainViewModel::class.java)
+                viewModel.downloadCompleteEvent.collect { event ->
+                    DownloadService.showCompleteNotification(this@MainActivity, event.title)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error al observar completados: ${e.message}")
+            }
+        }
+        lifecycleScope.launch {
+            try {
+                val viewModel = get<MainViewModel>(MainViewModel::class.java)
+                viewModel.downloadFailedEvent.collect { event ->
+                    DownloadService.showFailedNotification(this@MainActivity, event.title, event.error)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error al observar fallos: ${e.message}")
             }
         }
     }
@@ -113,6 +132,15 @@ class MainActivity : ComponentActivity() {
                 != PackageManager.PERMISSION_GRANTED
             ) {
                 needed.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            // Android 15+: FOREGROUND_SERVICE_DATA_SYNC es runtime permission
+            if (Build.VERSION.SDK_INT >= 35) {
+                if (ContextCompat.checkSelfPermission(
+                        this, "android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    needed.add("android.permission.FOREGROUND_SERVICE_DATA_SYNC")
+                }
             }
         } else {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)

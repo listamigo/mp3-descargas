@@ -405,7 +405,7 @@ class APIHandler(BaseHTTPRequestHandler):
             ]
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", "-",
-                "-codec:a", "libmp3lame", "-q:a", "0",
+                "-codec:a", "libmp3lame", "-b:a", "256k",
                 "-id3v2_version", "3",
                 "-f", "mp3", "-",
             ]

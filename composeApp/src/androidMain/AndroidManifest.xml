@@ -6,8 +6,7 @@
 
     <!-- Foreground Service: Android 14+ requiere declaración explícita -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
-        android:maxSdkVersion="34" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Almacenamiento: API < 29 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"

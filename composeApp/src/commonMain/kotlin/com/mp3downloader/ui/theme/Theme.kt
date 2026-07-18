@@ -16,129 +16,147 @@ enum class AppTheme(val label: String, val icon: String) {
     SAKURA("Sakura", "flower")
 }
 
-// ── Color palettes ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+//  DARK  —  Burnt Sienna (terracotta suave, menos saturado que el rojo vivo)
+// ══════════════════════════════════════════════════════════════════════════
+private val DarkPrimary      = Color(0xFFC0624E)
+private val DarkOnPrimary    = Color.White
+private val DarkContainer    = Color(0xFF3D1A12)
+private val DarkOnContainer  = Color(0xFFFFD4C4)
+private val DarkSecondary      = Color(0xFFA0A0A0)
+private val DarkOnSecondary    = Color.Black
+private val DarkSecondaryContainer = Color(0xFF2D2D2D)
+private val DarkBackground   = Color(0xFF121212)
+private val DarkOnBackground = Color(0xFFE1E1E1)
+private val DarkSurface      = Color(0xFF1E1E1E)
+private val DarkOnSurface    = Color(0xFFE1E1E1)
+private val DarkSurfaceVariant    = Color(0xFF282828)
+private val DarkOnSurfaceVariant  = Color(0xFFB3B3B3)
+private val DarkOutline      = Color(0xFF404040)
+private val DarkOutlineVariant    = Color(0xFF333333)
+private val DarkError        = Color(0xFFE74C3C)
+private val DarkOnError      = Color.White
+private val DarkErrorContainer    = Color(0xFF3D1111)
+private val DarkTertiary     = Color(0xFF4FC3B7)
 
-private val DarkPrimary = Color(0xFF1DB954)        // Spotify green
-private val DarkOnPrimary = Color.Black
-private val DarkContainer = Color(0xFF1AA34A)
-private val DarkOnContainer = Color.White
-private val DarkSecondary = Color(0xFFB3B3B3)
-private val DarkOnSecondary = Color.Black
-private val DarkSecondaryContainer = Color(0xFF2A2A2A)
-private val DarkBackground = Color(0xFF0D0D0D)
-private val DarkOnBackground = Color(0xFFE8E8E8)
-private val DarkSurface = Color(0xFF1A1A1A)
-private val DarkOnSurface = Color(0xFFE8E8E8)
-private val DarkSurfaceVariant = Color(0xFF252525)
-private val DarkOnSurfaceVariant = Color(0xFFA0A0A0)
-private val DarkOutline = Color(0xFF3A3A3A)
-private val DarkOutlineVariant = Color(0xFF2D2D2D)
-private val DarkError = Color(0xFFFF5252)
-private val DarkOnError = Color.White
-private val DarkErrorContainer = Color(0xFF3D1111)
-private val DarkTertiary = Color(0xFF7C4DFF)
+// ══════════════════════════════════════════════════════════════════════════
+//  LIGHT  —  Warm Ochre (tostado / ámbar, profesional y cálido)
+// ══════════════════════════════════════════════════════════════════════════
+private val LightPrimary      = Color(0xFFA6633E)
+private val LightOnPrimary    = Color.White
+private val LightContainer    = Color(0xFFFFE0CC)
+private val LightOnContainer  = Color(0xFF3D1A0A)
+private val LightSecondary      = Color(0xFF757575)
+private val LightOnSecondary    = Color.White
+private val LightSecondaryContainer = Color(0xFFE8E8E8)
+private val LightBackground   = Color(0xFFFFFFFF)
+private val LightOnBackground = Color(0xFF1A1A1A)
+private val LightSurface      = Color(0xFFF7F5F3)
+private val LightOnSurface    = Color(0xFF1A1A1A)
+private val LightSurfaceVariant    = Color(0xFFEDE8E4)
+private val LightOnSurfaceVariant  = Color(0xFF666666)
+private val LightOutline      = Color(0xFFCCCCCC)
+private val LightOutlineVariant    = Color(0xFFE0E0E0)
+private val LightError        = Color(0xFFD32F2F)
+private val LightOnError      = Color.White
+private val LightErrorContainer    = Color(0xFFFFDAD6)
+private val LightTertiary     = Color(0xFF3D8C7A)
 
-private val LightPrimary = Color(0xFF1565C0)
-private val LightOnPrimary = Color.White
-private val LightContainer = Color(0xFFD6EAFF)
-private val LightOnContainer = Color(0xFF001C3A)
-private val LightSecondary = Color(0xFF545F70)
-private val LightOnSecondary = Color.White
-private val LightSecondaryContainer = Color(0xFFD8E3F8)
-private val LightBackground = Color(0xFFF8FAFE)
-private val LightOnBackground = Color(0xFF1A1C1E)
-private val LightSurface = Color(0xFFFFFFFF)
-private val LightOnSurface = Color(0xFF1A1C1E)
-private val LightSurfaceVariant = Color(0xFFEDF1F6)
-private val LightOnSurfaceVariant = Color(0xFF43474E)
-private val LightOutline = Color(0xFFC3C7CF)
-private val LightOutlineVariant = Color(0xFFE0E3EA)
-private val LightError = Color(0xFFBA1A1A)
-private val LightOnError = Color.White
-private val LightErrorContainer = Color(0xFFFFDAD6)
-private val LightTertiary = Color(0xFF6E56CF)
-
-private val NeonPrimary = Color(0xFFFF006E)
-private val NeonOnPrimary = Color.White
-private val NeonContainer = Color(0xFF3D001A)
-private val NeonOnContainer = Color(0xFFFFD9E3)
-private val NeonSecondary = Color(0xFFFFD93D)
-private val NeonOnSecondary = Color.Black
+// ══════════════════════════════════════════════════════════════════════════
+//  NEON  —  Muted Purple (violeta neón, mantiene la vibra cyberpunk)
+// ══════════════════════════════════════════════════════════════════════════
+private val NeonPrimary      = Color(0xFF9C7FC4)
+private val NeonOnPrimary    = Color.White
+private val NeonContainer    = Color(0xFF2D1A4A)
+private val NeonOnContainer  = Color(0xFFE0CCFF)
+private val NeonSecondary      = Color(0xFFFFD93D)
+private val NeonOnSecondary    = Color.Black
 private val NeonSecondaryContainer = Color(0xFF3D3500)
-private val NeonBackground = Color(0xFF0A0A14)
+private val NeonBackground   = Color(0xFF0A0A14)
 private val NeonOnBackground = Color(0xFFE8E6F0)
-private val NeonSurface = Color(0xFF141420)
-private val NeonOnSurface = Color(0xFFE8E6F0)
-private val NeonSurfaceVariant = Color(0xFF1E1E30)
-private val NeonOnSurfaceVariant = Color(0xFFB0ADC0)
-private val NeonOutline = Color(0xFF3A3850)
-private val NeonOutlineVariant = Color(0xFF2A2840)
-private val NeonError = Color(0xFFFF4081)
-private val NeonOnError = Color.White
-private val NeonErrorContainer = Color(0xFF3D001A)
-private val NeonTertiary = Color(0xFF00E5FF)
+private val NeonSurface      = Color(0xFF12101E)
+private val NeonOnSurface    = Color(0xFFE8E6F0)
+private val NeonSurfaceVariant    = Color(0xFF1E1E30)
+private val NeonOnSurfaceVariant  = Color(0xFFB0ADC0)
+private val NeonOutline      = Color(0xFF3A3850)
+private val NeonOutlineVariant    = Color(0xFF2A2840)
+private val NeonError        = Color(0xFFFF4081)
+private val NeonOnError      = Color.White
+private val NeonErrorContainer    = Color(0xFF3D001A)
+private val NeonTertiary     = Color(0xFF00E5FF)
 
-private val MidnightPrimary = Color(0xFF6C63FF)
-private val MidnightOnPrimary = Color.White
-private val MidnightContainer = Color(0xFF2B2670)
-private val MidnightOnContainer = Color(0xFFE4E0FF)
-private val MidnightSecondary = Color(0xFF90CAF9)
-private val MidnightOnSecondary = Color(0xFF0D1B2A)
+// ══════════════════════════════════════════════════════════════════════════
+//  MIDNIGHT  —  Dusty Blue (azul acero, cielo nocturno sereno)
+// ══════════════════════════════════════════════════════════════════════════
+private val MidnightPrimary      = Color(0xFF5D8FC4)
+private val MidnightOnPrimary    = Color.White
+private val MidnightContainer    = Color(0xFF0D2A4A)
+private val MidnightOnContainer  = Color(0xFFC8E0FF)
+private val MidnightSecondary      = Color(0xFF90CAF9)
+private val MidnightOnSecondary    = Color(0xFF0D1B2A)
 private val MidnightSecondaryContainer = Color(0xFF1B2838)
-private val MidnightBackground = Color(0xFF0B0E17)
+private val MidnightBackground   = Color(0xFF0B0E17)
 private val MidnightOnBackground = Color(0xFFE2E2EC)
-private val MidnightSurface = Color(0xFF121622)
-private val MidnightOnSurface = Color(0xFFE2E2EC)
-private val MidnightSurfaceVariant = Color(0xFF1C2030)
-private val MidnightOnSurfaceVariant = Color(0xFFA0A4B8)
-private val MidnightOutline = Color(0xFF303548)
-private val MidnightOutlineVariant = Color(0xFF242838)
-private val MidnightError = Color(0xFFFF5252)
-private val MidnightOnError = Color.White
-private val MidnightErrorContainer = Color(0xFF3D1111)
-private val MidnightTertiary = Color(0xFF00E5FF)
+private val MidnightSurface      = Color(0xFF10151F)
+private val MidnightOnSurface    = Color(0xFFE2E2EC)
+private val MidnightSurfaceVariant    = Color(0xFF1C2030)
+private val MidnightOnSurfaceVariant  = Color(0xFFA0A4B8)
+private val MidnightOutline      = Color(0xFF303548)
+private val MidnightOutlineVariant    = Color(0xFF242838)
+private val MidnightError        = Color(0xFFFF5252)
+private val MidnightOnError      = Color.White
+private val MidnightErrorContainer    = Color(0xFF3D1111)
+private val MidnightTertiary     = Color(0xFF4DD0B7)
 
-private val GlassPrimary = Color(0xFFCE93D8)
-private val GlassOnPrimary = Color.Black
-private val GlassContainer = Color(0xFF3D1844)
-private val GlassOnContainer = Color(0xFFF3DFF5)
-private val GlassSecondary = Color(0xFF9C27B0)
-private val GlassOnSecondary = Color.White
-private val GlassSecondaryContainer = Color(0xFF2A0033)
-private val GlassBackground = Color(0xFF0E0E14)
-private val GlassOnBackground = Color(0xFFE8E6EE)
-private val GlassSurface = Color(0xFF181820)
-private val GlassOnSurface = Color(0xFFE8E6EE)
-private val GlassSurfaceVariant = Color(0xFF22222E)
-private val GlassOnSurfaceVariant = Color(0xFFB0AEC0)
-private val GlassOutline = Color(0xFF3A3848)
-private val GlassOutlineVariant = Color(0xFF2A2838)
-private val GlassError = Color(0xFFFF5252)
-private val GlassOnError = Color.White
-private val GlassErrorContainer = Color(0xFF3D1111)
-private val GlassTertiary = Color(0xFF7C4DFF)
+// ══════════════════════════════════════════════════════════════════════════
+//  GLASS  —  Lavender Purple (púrpura lavanda, efecto vidrio)
+// ══════════════════════════════════════════════════════════════════════════
+private val GlassPrimary      = Color(0xFF8A7CC4)
+private val GlassOnPrimary    = Color.White
+private val GlassContainer    = Color(0xFF2A1A4A)
+private val GlassOnContainer  = Color(0xFFD4C8FF)
+private val GlassSecondary      = Color(0xFFA0A0C0)
+private val GlassOnSecondary    = Color.Black
+private val GlassSecondaryContainer = Color(0xFF2A2A3E)
+private val GlassBackground   = Color(0xFF121212)
+private val GlassOnBackground = Color(0xFFE1E1E1)
+private val GlassSurface      = Color(0xFF18182A)
+private val GlassOnSurface    = Color(0xFFE1E1E1)
+private val GlassSurfaceVariant    = Color(0xFF22223E)
+private val GlassOnSurfaceVariant  = Color(0xFFB0AEC8)
+private val GlassOutline      = Color(0xFF3A3850)
+private val GlassOutlineVariant    = Color(0xFF2A2840)
+private val GlassError        = Color(0xFFCF6679)
+private val GlassOnError      = Color.Black
+private val GlassErrorContainer    = Color(0xFF3D001A)
+private val GlassTertiary     = Color(0xFFFFD54F)
 
-private val SakuraPrimary = Color(0xFFE91E63)
-private val SakuraOnPrimary = Color.White
-private val SakuraContainer = Color(0xFF4A0E22)
-private val SakuraOnContainer = Color(0xFFFFD9E3)
-private val SakuraSecondary = Color(0xFFF48FB1)
-private val SakuraOnSecondary = Color.Black
-private val SakuraSecondaryContainer = Color(0xFF3D1520)
-private val SakuraBackground = Color(0xFF0E0A10)
-private val SakuraOnBackground = Color(0xFFEDE8EE)
-private val SakuraSurface = Color(0xFF18121A)
-private val SakuraOnSurface = Color(0xFFEDE8EE)
-private val SakuraSurfaceVariant = Color(0xFF221A22)
-private val SakuraOnSurfaceVariant = Color(0xFFB0A0B0)
-private val SakuraOutline = Color(0xFF3A2A3A)
-private val SakuraOutlineVariant = Color(0xFF2A1E2A)
-private val SakuraError = Color(0xFFFF5252)
-private val SakuraOnError = Color.White
-private val SakuraErrorContainer = Color(0xFF3D1111)
-private val SakuraTertiary = Color(0xFFFF80AB)
+// ══════════════════════════════════════════════════════════════════════════
+//  SAKURA  —  Dusty Rose (rosa polvo, cerezos en flor)
+// ══════════════════════════════════════════════════════════════════════════
+private val SakuraPrimary      = Color(0xFFD48AA8)
+private val SakuraOnPrimary    = Color.White
+private val SakuraContainer    = Color(0xFF3D1520)
+private val SakuraOnContainer  = Color(0xFFFFD0DC)
+private val SakuraSecondary      = Color(0xFFC4A0B0)
+private val SakuraOnSecondary    = Color.Black
+private val SakuraSecondaryContainer = Color(0xFF2D1A28)
+private val SakuraBackground   = Color(0xFF1A1218)
+private val SakuraOnBackground = Color(0xFFE1D8DC)
+private val SakuraSurface      = Color(0xFF221820)
+private val SakuraOnSurface    = Color(0xFFE1D8DC)
+private val SakuraSurfaceVariant    = Color(0xFF2D242A)
+private val SakuraOnSurfaceVariant  = Color(0xFFB8A8B0)
+private val SakuraOutline      = Color(0xFF403840)
+private val SakuraOutlineVariant    = Color(0xFF2D242A)
+private val SakuraError        = Color(0xFFCF6679)
+private val SakuraOnError      = Color.Black
+private val SakuraErrorContainer    = Color(0xFF3D0020)
+private val SakuraTertiary     = Color(0xFF7CC4A8)
 
-// ── Color schemes ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+//  Color Schemes
+// ══════════════════════════════════════════════════════════════════════════
 
 val DarkColorScheme = darkColorScheme(
     primary = DarkPrimary,

@@ -38,6 +38,15 @@ data class SnackbarEvent(
     val action: (() -> Unit)? = null
 )
 
+data class DownloadCompleteEvent(
+    val title: String
+)
+
+data class DownloadFailedEvent(
+    val title: String,
+    val error: String
+)
+
 @OptIn(FlowPreview::class)
 class MainViewModel(
     private val repository: SongRepository,
@@ -72,6 +81,9 @@ class MainViewModel(
     private val _downloads = MutableStateFlow<List<DownloadTask>>(emptyList())
     val downloads: StateFlow<List<DownloadTask>> = _downloads.asStateFlow()
 
+    private val _searchVersion = MutableStateFlow(0)
+    val searchVersion: StateFlow<Int> = _searchVersion.asStateFlow()
+
     /** Número de descargas actualmente en progreso (para Foreground Service). */
     private val _foregroundDownloadsCount = MutableStateFlow(0)
     val foregroundDownloadsCount: StateFlow<Int> = _foregroundDownloadsCount.asStateFlow()
@@ -87,6 +99,12 @@ class MainViewModel(
 
     private val _snackbarEvent = MutableSharedFlow<SnackbarEvent>()
     val snackbarEvent: SharedFlow<SnackbarEvent> = _snackbarEvent.asSharedFlow()
+
+    private val _downloadCompleteEvent = MutableSharedFlow<DownloadCompleteEvent>()
+    val downloadCompleteEvent: SharedFlow<DownloadCompleteEvent> = _downloadCompleteEvent.asSharedFlow()
+
+    private val _downloadFailedEvent = MutableSharedFlow<DownloadFailedEvent>()
+    val downloadFailedEvent: SharedFlow<DownloadFailedEvent> = _downloadFailedEvent.asSharedFlow()
 
     private val audioUrlCache = LruCache<String, String>(200)
 
@@ -196,6 +214,7 @@ class MainViewModel(
 
         currentQuery = query
         currentOffset = 0
+        _searchVersion.value++
 
         requestJob?.cancel()
 
@@ -301,6 +320,7 @@ class MainViewModel(
                                     _selectedTab.value = AppTab.DOWNLOADS
                                 }
                             )
+                            _downloadCompleteEvent.emit(DownloadCompleteEvent(song.title))
                         } else if (result.status == DownloadStatus.FAILED) {
                             val errMsg = result.error ?: "Error desconocido"
                             showSnackbar(
@@ -308,6 +328,7 @@ class MainViewModel(
                                 actionLabel = "Copiar",
                                 action = { com.mp3downloader.domain.service.copyTextToClipboard(errMsg) }
                             )
+                            _downloadFailedEvent.emit(DownloadFailedEvent(song.title, errMsg))
                         }
                     }
                 }

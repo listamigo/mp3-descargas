@@ -49,7 +49,7 @@ kotlin {
             implementation(libs.ktor.okhttp)
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.androidx.activity.compose)
-            implementation(libs.mp3agic)
+            implementation(libs.jaudiotagger)
         }
 
         desktopMain.dependencies {

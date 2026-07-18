@@ -59,3 +59,138 @@ RUN pip install --no-cache-dir yt-dlp==2026.6.9
 - `server/Dockerfile`: pin `yt-dlp==2026.6.9`.
 
 Decidir en la próxima sesión si se commitean (recomendado para estabilizar redeploys).
+
+---
+
+## 📊 Análisis de limitaciones para uso compartido
+
+### Límites en la app (código)
+- **No hay límite de reproducción** — la app reproduce pistas completas sin restricción de duración.
+- **No hay límite de descargas** — el servidor no tiene rate limiting ni restricciones por usuario.
+- **No hay autenticación** — cualquier persona con la URL del servidor puede usarlo.
+
+### Problemas reales al compartir con múltiples usuarios
+
+#### 1. YouTube Bot Detection (el mayor problema)
+Cuando muchos usuarios descargan simultáneamente, YouTube detecta patrones de bot y bloquea al servidor. El código maneja esto con:
+- Rotación de `PLAYER_CLIENTS` (7 clientes diferentes)
+- Circuit breaker con cooldown de 60 segundos
+- Intentos con y sin cookies
+
+Pero con suficiente tráfico, YouTube bloqueará al servidor temporalmente.
+
+#### 2. Railway Free Tier limitations
+- **$5 de crédito mensual** — se agota rápido con uso intensivo
+- **512MB RAM** — cada descarga usa yt-dlp + ffmpeg (~100-200MB cada uno)
+- **Cold starts** — el servidor se suspende tras inactividad, tarda ~30s en arrancar
+- **Disco efímero** — se pierde en cada redeploy (las cookies se guardan en env var)
+
+#### 3. Capacidad estimada
+Con Railway free tier, se puede manejar **~5-10 usuarios concurrentes** como máximo. Más que eso:
+- Se quedará sin memoria
+- YouTube bloqueará al servidor
+- Se agotará el crédito mensual
+
+### Recomendaciones para escalar
+
+1. **Para pocos amigos (5-10)**: Railway free tier funciona, pero puede haber fallos ocasionales.
+
+2. **Para más usuarios**:
+   - **Oracle Cloud Free Tier** (mencionado en AGENTS.md) — 24/7 sin costo
+   - **Railway plan pago** (~$5/mes extra)
+   - **Múltiples servidores** con load balancing
+
+3. **Agregar rate limiting** (recomendado para producción):
+   - Limitar requests por IP (ej: 10 por minuto)
+   - Agregar autentificación básica si se comparte públicamente
+   - Monitorear uso de resources
+
+4. **Optimizar recursos del servidor**:
+   - Usar cache agresivo para búsquedas repetidas (ya implementado: 600s TTL)
+   - Limitar concurrencia de descargas simultáneas
+   - Implementar cola de prioridades
+
+### Métricas a monitorear si se comparte
+- Requests por minuto por IP
+- Tasa de fallos de yt-dlp (bot detection)
+- Uso de memoria del contenedor
+- Costo acumulado en Railway
+
+---
+
+## 🏗️ Infraestructura Backend: Alternativas Gratuitas (2026-07-11)
+
+> Investigación completa en `research/backend-free-alternatives/REPORT.md`
+
+### Resumen Rápido
+
+| Rango | Estrategia | Coste | Complejidad | Escalabilidad |
+|-------|-----------|-------|-------------|---------------|
+| 1 | **Supabase Cloud Free** | $0 | Baja | Alta |
+| 2 | **Supabase self-hosted en Oracle Cloud** | $0 | Media | Muy alta |
+| 3 | **Render + PostHog + AdminJS** | $0 | Media | Media |
+
+### Opción 1: Supabase Cloud Free (RECOMENDADO)
+
+**Para empezar hoy sin infraestructura.**
+
+| Recurso | Límite Free |
+|---------|-------------|
+| Usuarios (MAU) | 50,000 |
+| Base de datos PostgreSQL | 500 MB |
+| Storage | 1 GB |
+| Egress | 5 GB/mes |
+| Realtime | 200 conexiones |
+| Edge Functions | 500K invocaciones/mes |
+
+**Incluye**: Auth completo (OAuth social, MFA, anonymous), API REST/GraphQL automática, dashboard de administración.
+
+**Limitación crítica**: Se pausa después de 1 semana sin actividad.
+
+### Opción 2: Supabase Self-Hosted en Oracle Cloud Free
+
+**Para control total y escalabilidad ilimitada.**
+
+Oracle Cloud Always Free ofrece:
+- 4 ARM cores, 24 GB RAM
+- 200 GB storage
+- 10 TB/mes transferencia
+- **Coste**: $0 permanente
+
+Supabase self-hosted necesita mínimo 4 GB RAM / 2 cores. Cupido en una VM de Oracle Free.
+
+### Opción 3: Render + PostHog + AdminJS
+
+**Alternativa modular con componentes separados.**
+
+- **Render**: Hosting + Postgres (gratis, pero Postgres expira a 30 días)
+- **PostHog**: Analytics + errores (1M events/mes gratis)
+- **AdminJS/Strapi**: Dashboard admin (open source MIT)
+
+### Herramientas de Analytics Gratis
+
+| Herramienta | Events gratis | Self-hosted |
+|------------|---------------|-------------|
+| PostHog Cloud | 1M/mes | Sí (MIT) |
+| Umami | Ilimitados | Sí (MIT) |
+| Sentry | 5K/mes | Sí (BSL) |
+
+### Dashboard/Admin Open Source
+
+| Opción | Licencia | Gratis |
+|--------|----------|--------|
+| AdminJS | MIT | Sí |
+| Strapi | MIT | Sí |
+| Directus | MSCL | Sí (< $5M revenue) |
+
+### Recomendación Final
+
+**Para empezar HOY**: Supabase Cloud Free
+**Para producción seria**: Oracle Cloud + Supabase self-hosted
+**Para escalabilidad máxima**: Supabase Pro ($25/mes)
+
+### Fuentes Principales
+- Supabase Pricing: https://supabase.com/pricing
+- Oracle Cloud Free: https://www.oracle.com/cloud/free/
+- PostHog Pricing: https://posthog.com/pricing
+- Render Free: https://docs.render.com/free

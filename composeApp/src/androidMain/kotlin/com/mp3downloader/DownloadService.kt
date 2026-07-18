@@ -29,7 +29,9 @@ class DownloadService : Service() {
     companion object {
         private const val TAG = "DownloadService"
         private const val CHANNEL_ID = "download_channel"
+        private const val CHANNEL_COMPLETE_ID = "download_complete_channel"
         private const val NOTIFICATION_ID = 1001
+        private const val NOTIFICATION_COMPLETE_ID = 1002
 
         /** Contador de descargas activas en todo el proceso. */
         private var activeCount = 0
@@ -60,6 +62,36 @@ class DownloadService : Service() {
         /** Retorna la cantidad actual de descargas activas. */
         @Synchronized
         fun getActiveCount(): Int = activeCount
+
+        /** Muestra una notificación de descarga completada en la barra de estado. */
+        fun showCompleteNotification(context: Context, title: String) {
+            val notification = NotificationCompat.Builder(context, CHANNEL_COMPLETE_ID)
+                .setContentTitle("Descarga completada")
+                .setContentText(title)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build()
+            NotificationManagerCompat.from(context).notify(
+                NOTIFICATION_COMPLETE_ID + title.hashCode(),
+                notification
+            )
+        }
+
+        /** Muestra una notificación de descarga fallida en la barra de estado. */
+        fun showFailedNotification(context: Context, title: String, error: String) {
+            val notification = NotificationCompat.Builder(context, CHANNEL_COMPLETE_ID)
+                .setContentTitle("Descarga fallida")
+                .setContentText("$title — $error")
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build()
+            NotificationManagerCompat.from(context).notify(
+                NOTIFICATION_COMPLETE_ID + title.hashCode(),
+                notification
+            )
+        }
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -69,7 +101,17 @@ class DownloadService : Service() {
         Log.d(TAG, "onCreate")
         createNotificationChannel()
         acquireWakeLock()
-        startForeground(NOTIFICATION_ID, buildNotification(0))
+        // startForeground puede lanzar SecurityException en Android 15+ si
+        // el usuario no ha concedido FOREGROUND_SERVICE_DATA_SYNC. Lo
+        // capturamos gracefulmente para que no derribe la app.
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(0))
+        } catch (e: SecurityException) {
+            Log.e(TAG, "No se pudo iniciar foreground: ${e.message}. " +
+                "Las descargas continuarán sin notificación persistente.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en startForeground: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -117,7 +159,9 @@ class DownloadService : Service() {
     // ── Notificaciones ──────────────────────────────────────
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            val downloadChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Descargas",
                 NotificationManager.IMPORTANCE_LOW
@@ -125,8 +169,17 @@ class DownloadService : Service() {
                 description = "Notificación de descargas en curso"
                 setShowBadge(false)
             }
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            manager.createNotificationChannel(downloadChannel)
+
+            val completeChannel = NotificationChannel(
+                CHANNEL_COMPLETE_ID,
+                "Descargas completadas",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Notificación cuando una descarga finaliza"
+                setShowBadge(true)
+            }
+            manager.createNotificationChannel(completeChannel)
         }
     }
 

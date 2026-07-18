@@ -286,7 +286,7 @@ class DownloadEngine:
                         cmd = _base_cmd(client, cookies=use_cookies) + [
                             "--newline",
                             "-f", fmt,
-                            "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
+                            "--extract-audio", "--audio-format", "mp3", "--audio-quality", "256K",
                             "--embed-thumbnail", "--add-metadata",
                             "--write-thumbnail", "--convert-thumbnails", "jpg",
                             "--parse-metadata", "title:%(title)s",

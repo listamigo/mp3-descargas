@@ -99,7 +99,7 @@ class YtDlpProcessEngine : DownloadEngine {
                 "-f", "bestaudio",
                 "--extract-audio",
                 "--audio-format", "mp3",
-                "--audio-quality", "0",
+                "--audio-quality", "256K",
                 "--embed-thumbnail",
                 "--add-metadata",
                 "--write-thumbnail",

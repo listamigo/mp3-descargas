@@ -1,6 +1,7 @@
 package com.mp3downloader.domain.service
 
 import android.util.Log
+import com.mp3downloader.domain.service.ThumbnailQualityResolver
 import com.mp3downloader.domain.service.isSafeHttpsUrl
 import java.io.File
 import java.io.RandomAccessFile
@@ -61,16 +62,38 @@ object M4aMetadataWriter {
         thumbnailUrl: String?,
         genre: String?
     ) {
-        // Download cover art first (if needed) to avoid holding file handles
+        // Download cover art with quality fallback chain
+        // maxresdefault.jpg no existe para videos antiguos → YouTube devuelve placeholder 1x1
         val coverBytes: ByteArray? = if (!thumbnailUrl.isNullOrBlank() && isSafeHttpsUrl(thumbnailUrl)) {
             try {
-                Log.d(TAG, "Downloading cover art from: $thumbnailUrl")
-                val bytes = downloadWithTimeout(thumbnailUrl, 10_000)
-                if (bytes != null && bytes.size > 100) {
-                    Log.d(TAG, "Cover art downloaded: ${bytes.size} bytes")
-                    bytes
+                val fallbackUrls = ThumbnailQualityResolver.generateFallbackChain(
+                    videoId = "",
+                    originalUrl = thumbnailUrl
+                )
+                val minValidSize = 5000  // 5KB mínimo: placeholders de YouTube son < 2KB
+                var bestBytes: ByteArray? = null
+
+                for (url in fallbackUrls) {
+                    Log.d(TAG, "Downloading cover art from: $url")
+                    val bytes = downloadWithTimeout(url, 10_000)
+                    if (bytes != null && bytes.size >= minValidSize) {
+                        Log.d(TAG, "Cover art OK: ${bytes.size} bytes from $url")
+                        bestBytes = bytes
+                        break
+                    }
+                    if (bytes != null) {
+                        Log.w(TAG, "Cover art too small (${bytes.size} bytes) at $url, trying next...")
+                    } else {
+                        Log.w(TAG, "Download failed at $url, trying next...")
+                    }
+                    bestBytes = bytes  // Keep last result even if small
+                }
+
+                if (bestBytes != null && bestBytes.size > 100) {
+                    Log.d(TAG, "Cover art final: ${bestBytes.size} bytes")
+                    bestBytes
                 } else {
-                    Log.w(TAG, "Cover art too small (${bytes?.size ?: 0} bytes), skipping")
+                    Log.w(TAG, "Cover art too small (${bestBytes?.size ?: 0} bytes), skipping")
                     null
                 }
             } catch (e: Exception) {
@@ -358,7 +381,11 @@ object M4aMetadataWriter {
                 // Write modified moov
                 dstRaf.write(newMoovData)
 
-                // Write everything AFTER original moov
+                // Write everything AFTER the ORIGINAL moov position.
+                // NOTA: Usamos moovAtom.offset + moovAtom.size (posición original
+                // después del moov) para leer los datos desde el archivo fuente.
+                // El nuevo moov puede ser más grande (cover art), pero eso no
+                // afecta la lectura de los datos posteriores desde el source.
                 val afterMoovOffset = moovAtom.offset + moovAtom.size
                 if (afterMoovOffset < file.length()) {
                     srcRaf.seek(afterMoovOffset)

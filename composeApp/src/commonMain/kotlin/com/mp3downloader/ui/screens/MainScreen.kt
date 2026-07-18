@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -117,6 +118,9 @@ fun MainScreen(viewModel: MainViewModel) {
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showSettings by remember { mutableStateOf(false) }
+    val searchVersion by viewModel.searchVersion.collectAsState()
+    // Persiste la posición de scroll al cambiar de pestaña y volver
+    val searchListState = rememberLazyListState()
 
     LaunchedEffect(Unit) {
         viewModel.snackbarEvent.collect { event ->
@@ -263,6 +267,8 @@ fun MainScreen(viewModel: MainViewModel) {
                         isSearching = isSearching,
                         searchError = searchError,
                         searchResults = searchResults,
+                        listState = searchListState,
+                        searchVersion = searchVersion,
                         isLoadingMore = isLoadingMore,
                         hasMore = hasMore,
                         onLoadMore = viewModel::loadMore,
@@ -332,6 +338,8 @@ private fun SearchTab(
     isSearching: Boolean,
     searchError: String?,
     searchResults: List<com.mp3downloader.domain.model.Song>,
+    listState: LazyListState,
+    searchVersion: Int,
     isLoadingMore: Boolean,
     hasMore: Boolean,
     onLoadMore: () -> Unit,
@@ -412,7 +420,12 @@ private fun SearchTab(
                 }
             }
         } else {
-            val listState = rememberLazyListState()
+            // Scroll al inicio solo en búsquedas nuevas (no en loadMore)
+            LaunchedEffect(searchVersion) {
+                if (searchVersion > 0) {
+                    listState.animateScrollToItem(0)
+                }
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),

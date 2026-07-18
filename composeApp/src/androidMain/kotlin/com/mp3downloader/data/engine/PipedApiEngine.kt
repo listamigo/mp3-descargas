@@ -5,6 +5,7 @@ import com.mp3downloader.data.dto.PipedStreamResponse
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
 import com.mp3downloader.domain.service.M4aMetadataWriter
+import com.mp3downloader.domain.service.ThumbnailQualityResolver
 import com.mp3downloader.domain.service.isSafeHttpsUrl
 import com.mp3downloader.domain.service.isValidYouTubeId
 import io.ktor.client.HttpClient
@@ -204,11 +205,15 @@ class PipedApiEngine : DownloadEngine {
                 outputFile.delete()
             } else {
                 // Embed metadata (title, artist, cover art) into the M4A file
+                val highResThumbnail = ThumbnailQualityResolver.resolveBestThumbnailUrl(
+                    videoId = song.id,
+                    originalUrl = song.thumbnailUrl
+                )
                 M4aMetadataWriter.writeMetadata(
                     filePath = outputFile.absolutePath,
                     title = song.title,
                     artist = song.artist,
-                    thumbnailUrl = song.thumbnailUrl.takeIf { it.isNotBlank() }
+                    thumbnailUrl = highResThumbnail.takeIf { it.isNotBlank() }
                 )
 
                 emit(DownloadResult(

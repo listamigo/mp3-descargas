@@ -42,7 +42,7 @@ private val remoteJson = Json { ignoreUnknownKeys = true }
 class RemoteServerEngine : DownloadEngine {
 
     /** Reject absurdly large responses to avoid filling the device storage. */
-    private val maxDownloadBytes = 190L * 1024 * 1024
+    private val maxDownloadBytes = 250L * 1024 * 1024
 
     private val httpClient = HttpClient {
         install(HttpTimeout) {
@@ -147,7 +147,7 @@ class RemoteServerEngine : DownloadEngine {
             if (totalBytes > maxDownloadBytes) {
                 inputStream.close()
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
-                    error = "Archivo demasiado grande para descargar (máx 190 MB)."))
+                    error = "Archivo demasiado grande para descargar (máx 250 MB)."))
                 return@flow
             }
             var downloadedBytes = 0L
@@ -167,7 +167,7 @@ class RemoteServerEngine : DownloadEngine {
                         inputStream.close()
                         outputFile.delete()
                         emit(DownloadResult(song.id, DownloadStatus.FAILED,
-                            error = "Archivo demasiado grande para descargar (máx 190 MB)."))
+                            error = "Archivo demasiado grande para descargar (máx 250 MB)."))
                         return@flow
                     }
 

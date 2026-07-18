@@ -8,24 +8,24 @@
 
     <!-- Background circle glow -->
     <path
-        android:fillColor="#1DB954"
+        android:fillColor="#FF0000"
         android:pathData="M54,54m-28,0a28,28 0,1 1,56 0a28,28 0,1 1,-56 0"
         android:fillAlpha="0.15" />
 
     <!-- Outer circle -->
     <path
-        android:fillColor="#1DB954"
+        android:fillColor="#FF0000"
         android:pathData="M54,54m-22,0a22,22 0,1 1,44 0a22,22 0,1 1,-44 0"
         android:fillAlpha="0.25" />
 
     <!-- Music note head (rounded) -->
     <path
-        android:fillColor="#1DB954"
+        android:fillColor="#FF0000"
         android:pathData="M43,58 C43,53.5 46.5,50 51,50 C55.5,50 59,53.5 59,58 C59,62.5 55.5,66 51,66 C46.5,66 43,62.5 43,58 Z" />
 
     <!-- Music note stem -->
     <path
-        android:fillColor="#1DB954"
+        android:fillColor="#FF0000"
         android:pathData="M59,58 L59,28 L68,31 L68,35 L61,32.5 L61,58" />
 
     <!-- Download arrow body -->
