@@ -51,6 +51,8 @@ LOG_DIR = os.environ.get("LOG_DIR", "/opt/mp3downloader/logs")
 # evita que un redeploy traiga una yt-dlp que rompa el bypass cookie-less.
 YTDLP_VERSION = os.environ.get("YTDLP_VERSION", "2026.6.9")
 LOG_FILE = os.environ.get("LOG_FILE", os.path.join(LOG_DIR, "server.log"))
+# Proxy residencial para evitar IPs de datacenter (Railway, etc.)
+RESIDENTIAL_PROXY = os.environ.get("RESIDENTIAL_PROXY", "")
 
 # ═══════════════════════════════════════════════════════════════
 # Logging
@@ -273,6 +275,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._json(200, {
                     "status": "ok",
                     "has_cookies": os.path.isfile(COOKIES_FILE),
+                    "has_proxy": bool(RESIDENTIAL_PROXY),
                     "yt_dlp_version": _get_ytdlp_version(),
                     "uptime": _get_uptime(),
                     "client_health": get_client_health(),
@@ -764,6 +767,7 @@ def main():
     logger.info(f"yt-dlp:      {_get_ytdlp_version()}")
     logger.info(f"Host:        {HOST}:{PORT}")
     logger.info(f"Cookies:     {os.path.isfile(COOKIES_FILE)} ({COOKIES_FILE})")
+    logger.info(f"Proxy:       {'CONFIGURADO' if RESIDENTIAL_PROXY else 'NO CONFIGURADO'}")
     logger.info(f"Log level:   {LOG_LEVEL}")
     logger.info("═" * 50)
 

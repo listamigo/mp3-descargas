@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import threading
@@ -16,6 +17,25 @@ from models.song import DownloadStatus, DownloadTask, Song
 from utils.helpers import sanitize_filename
 
 YTDLP_TIMEOUT = 60
+
+# ═══════════════════════════════════════════════════════════════
+# User-Agent rotation — YouTube bloquea UAs estáticos de bots
+# ────────────────────────────────────────────────────────────────
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+]
+
+# ═══════════════════════════════════════════════════════════════
+# Proxy residencial (opcional) — evita IPs de datacenter
+# ────────────────────────────────────────────────────────────────
+# Set RESIDENTIAL_PROXY env var (e.g. "socks5://user:pass@host:port")
+# to route yt-dlp through a residential proxy.
+RESIDENTIAL_PROXY = os.environ.get("RESIDENTIAL_PROXY", "")
 
 # Thread-safe TTL cache for search results so repeated queries don't hit
 # yt-dlp/YouTube on every request (cheaper + lowers bot-challenge risk).
@@ -149,17 +169,53 @@ def get_client_health() -> list:
     return [client_state(c) for c in PLAYER_CLIENTS]
 
 
-# Señales de reto transitorio de YouTube: pequeño backoff antes de probar
-# el siguiente client en vez de insistir de inmediato.
+# Señales de reto transitorio de YouTube: backoff exponencial antes de
+# probar el siguiente client en vez de insistir de inmediato.
 _TRANSIENT_HINTS = (
     "429", "rate limit", "too many requests", "retry after",
     "sign in to confirm", "bot", "confirm you",
+    "not available in your country", "video unavailable",
+    "private video", "unavailable video",
 )
+
+# Errores que indican bloqueo duro — no reintentar con el mismo client
+_HARD_BAN_HINTS = (
+    "sign in to confirm you're not a bot",
+    "please sign in",
+    "confirm your age",
+    "content warning",
+)
+
+# Backoff exponencial con jitter para evitar thundering herd
+_BACKOFF_BASE = 2.0  # segundos
+_BACKOFF_MAX = 16.0  # tope
+_backoff_counter = {}  # client -> consecutive failures
 
 
 def _is_transient(stderr: str) -> bool:
     s = (stderr or "").lower()
     return any(hint in s for hint in _TRANSIENT_HINTS)
+
+
+def _is_hard_ban(stderr: str) -> bool:
+    s = (stderr or "").lower()
+    return any(hint in s for hint in _HARD_BAN_HINTS)
+
+
+def _get_backoff(client: str) -> float:
+    """Backoff exponencial con jitter: 2s, 4s, 8s, 16s..."""
+    count = _backoff_counter.get(client, 0)
+    base = min(_BACKOFF_BASE * (2 ** count), _BACKOFF_MAX)
+    jitter = random.uniform(0, base * 0.3)
+    return base + jitter
+
+
+def _record_backoff(client: str) -> None:
+    _backoff_counter[client] = _backoff_counter.get(client, 0) + 1
+
+
+def _clear_backoff(client: str) -> None:
+    _backoff_counter.pop(client, None)
 
 
 
@@ -179,6 +235,22 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     cmd.extend(["--extractor-args", extractor])
     if cookies and os.path.isfile(COOKIES_FILE):
         cmd.extend(["--cookies", COOKIES_FILE])
+    # User-Agent rotado — evita fingerprinting estático
+    cmd.extend(["--user-agent", random.choice(USER_AGENTS)])
+    # Headers realistas para simular navegador legítimo
+    cmd.extend([
+        "--referer", "https://www.youtube.com/",
+        "--add-header", "Accept-Language:en-US,en;q=0.9",
+        "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "--add-header", "Sec-Fetch-Dest:document",
+        "--add-header", "Sec-Fetch-Mode:navigate",
+        "--add-header", "Sec-Fetch-Site:none",
+        "--add-header", "Sec-Fetch-User:?1",
+        "--add-header", "Upgrade-Insecure-Requests:1",
+    ])
+    # Proxy residencial si está configurado
+    if RESIDENTIAL_PROXY:
+        cmd.extend(["--proxy", RESIDENTIAL_PROXY])
     return cmd
 
 
@@ -237,11 +309,19 @@ class DownloadEngine:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     record_success(client)
+                    _clear_backoff(client)
                     return result.stdout.strip().split("\n")[0].strip()
                 last_err = result.stderr[:200]
                 record_failure(client)
+                if _is_hard_ban(last_err):
+                    logger.warning(f"Hard ban detectado en {client} para {song.id}")
+                    _record_backoff(client)
+                    continue
                 if _is_transient(last_err):
-                    time.sleep(2)
+                    backoff = _get_backoff(client)
+                    logger.info(f"Backoff {backoff:.1f}s para {client} (transitorio)")
+                    time.sleep(backoff)
+                    _record_backoff(client)
         raise RuntimeError(f"All player clients failed for {song.id}: {last_err}")
 
     def download(
@@ -328,6 +408,7 @@ class DownloadEngine:
 
                         if process.returncode == 0:
                             record_success(client)
+                            _clear_backoff(client)
                             if on_progress:
                                 on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
                             self._embed_metadata(output_path, thumb_path)
@@ -339,6 +420,15 @@ class DownloadEngine:
                         last_error = f"[{client}] Format '{fmt}' failed: {stderr[:200]}"
                         record_failure(client)
                         print(f"[DL] {last_error}", flush=True)
+
+                        # Backoff exponencial para errores transitorios
+                        if _is_transient(stderr):
+                            backoff = _get_backoff(client)
+                            logger.info(f"DL backoff {backoff:.1f}s para {client}")
+                            time.sleep(backoff)
+                            _record_backoff(client)
+                        elif _is_hard_ban(stderr):
+                            _record_backoff(client)
 
                     except Exception as e:
                         last_error = f"[{client}] Format '{fmt}' exception: {e}"
