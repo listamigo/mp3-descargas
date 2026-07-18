@@ -236,6 +236,70 @@ def _clear_backoff(client: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Free SOCKS5 proxy fallback — cuando YouTube bloquea la IP
+# ────────────────────────────────────────────────────────────────
+_FREE_PROXY_CACHE_TTL = 300  # 5 min
+_free_proxy_cache = {"proxies": [], "ts": 0.0}
+_free_proxy_lock = threading.Lock()
+
+
+def _fetch_free_proxies() -> list[str]:
+    """Obtiene proxies SOCKS5 gratuitos de la API de GeoNode."""
+    now = time.time()
+    with _free_proxy_lock:
+        if _free_proxy_cache["proxies"] and (now - _free_proxy_cache["ts"]) < _FREE_PROXY_CACHE_TTL:
+            return _free_proxy_cache["proxies"]
+
+    try:
+        req = urllib.request.Request(
+            "https://proxylist.geonode.com/api/proxy-list?"
+            "limit=15&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
+            headers={"User-Agent": random.choice(USER_AGENTS)},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            proxies = [
+                f"socks5://{p['ip']}:{p['port']}"
+                for p in data.get("data", [])
+                if p.get("ip") and p.get("port")
+            ]
+            with _free_proxy_lock:
+                _free_proxy_cache["proxies"] = proxies
+                _free_proxy_cache["ts"] = now
+            logger.info(f"Fetched {len(proxies)} free SOCKS5 proxies")
+            return proxies
+    except Exception as e:
+        logger.warning(f"Failed to fetch free proxies: {e}")
+        return []
+
+
+def _try_with_proxy(video_id: str) -> str | None:
+    """Intenta obtener URL de audio vía proxies SOCKS5 gratuitos."""
+    proxies = _fetch_free_proxies()
+    if not proxies:
+        return None
+
+    url = f"https://youtube.com/watch?v={video_id}"
+    for proxy in proxies[:5]:  # probar max 5
+        try:
+            cmd = [
+                "yt-dlp", "--no-warnings",
+                "--proxy", proxy,
+                "--user-agent", random.choice(USER_AGENTS),
+                "--extractor-args", "youtube:player_client=tv_embedded",
+                "-f", "bestaudio/best",
+                "--get-url", url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            if result.returncode == 0 and result.stdout.strip():
+                logger.info(f"Audio URL via proxy {proxy} for {video_id}")
+                return result.stdout.strip().split("\n")[0].strip()
+        except (subprocess.TimeoutExpired, Exception):
+            continue
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
 # Invidious fallback — funciona sin cookies/proxy
 # ────────────────────────────────────────────────────────────────
 
@@ -460,8 +524,14 @@ class DownloadEngine:
                     time.sleep(backoff)
                     _record_backoff(client)
 
-        # Fallback: intentar vía Invidious
-        logger.info(f"yt-dlp falló para {song.id}, intentando Invidious...")
+        # Fallback 1: intentar vía proxy SOCKS5 gratuito
+        logger.info(f"yt-dlp falló para {song.id}, intentando proxy SOCKS5...")
+        proxy_url = _try_with_proxy(song.id)
+        if proxy_url:
+            return proxy_url
+
+        # Fallback 2: intentar vía Invidious
+        logger.info(f"Proxy falló para {song.id}, intentando Invidious...")
         invidious_url = invidious_get_audio_url(song.id)
         if invidious_url:
             return invidious_url
@@ -583,8 +653,50 @@ class DownloadEngine:
                         if os.path.isfile(f):
                             os.remove(f)
 
-        # Fallback: intentar descarga vía Invidious
-        logger.info(f"yt-dlp falló para {song.id}, intentando Invidious fallback...")
+        # Fallback 1: intentar descarga vía proxy SOCKS5 gratuito
+        logger.info(f"yt-dlp falló para {song.id}, intentando proxy SOCKS5...")
+        if on_progress:
+            on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "Proxy fallback")
+
+        proxy_url = _try_with_proxy(song.id)
+        if proxy_url:
+            try:
+                if on_progress:
+                    on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "Proxy download")
+                # Descargar vía URL obtenida del proxy
+                import urllib.request as _urllib_req
+                proxy_req = _urllib_req.Request(proxy_url, headers={
+                    "User-Agent": random.choice(USER_AGENTS),
+                })
+                with _urllib_req.urlopen(proxy_req, timeout=60) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    tmp_path = output_path + ".tmp"
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            chunk = resp.read(8192)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if on_progress and total > 0:
+                                on_progress(DownloadStatus.DOWNLOADING, downloaded / total, "", "")
+                    os.replace(tmp_path, output_path)
+                    if on_progress:
+                        on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
+                    self._embed_metadata(output_path, thumb_path)
+                    if on_complete:
+                        on_complete(output_path, None)
+                    return
+            except Exception as e:
+                logger.warning(f"Proxy download failed for {song.id}: {e}")
+                try:
+                    os.remove(output_path + ".tmp")
+                except Exception:
+                    pass
+
+        # Fallback 2: intentar descarga vía Invidious
+        logger.info(f"Proxy falló para {song.id}, intentando Invidious fallback...")
         if on_progress:
             on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "Invidious fallback")
 
@@ -602,7 +714,7 @@ class DownloadEngine:
             return
 
         if on_complete:
-            on_complete(None, last_error or "All download formats failed (yt-dlp + Invidious)")
+            on_complete(None, last_error or "All download formats failed (yt-dlp + proxy + Invidious)")
 
     def _embed_metadata(self, output_path: str, thumb_path: str) -> None:
         if not os.path.isfile(thumb_path):

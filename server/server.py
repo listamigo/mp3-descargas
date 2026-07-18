@@ -504,9 +504,108 @@ class APIHandler(BaseHTTPRequestHandler):
                 try: p2.stdout.close()
                 except Exception: pass
 
-        # Todos los clients fallaron → intentar Invidious
-        logger.info(f"yt-dlp falló para {video_id}, intentando Invidious fallback...")
+        # Todos los clients fallaron → intentar proxy SOCKS5
+        logger.info(f"yt-dlp falló para {video_id}, intentando proxy SOCKS5...")
+        from download_engine import _try_with_proxy
+        proxy_url = _try_with_proxy(video_id)
+        if proxy_url:
+            self._stream_proxy_download(video_id, proxy_url)
+            return
+
+        # Fallback 2: intentar Invidious
+        logger.info(f"Proxy falló para {video_id}, intentando Invidious fallback...")
         self._proxy_download_invidious(video_id, title)
+
+    def _stream_proxy_download(self, video_id: str, audio_url: str) -> None:
+        """Stream download from a proxy-obtained audio URL."""
+        import subprocess as _sp
+
+        download_path = self._get_download_path(video_id)
+        os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
+
+        try:
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", audio_url,
+                "-codec:a", "libmp3lame", "-b:a", "256k",
+                "-id3v2_version", "3",
+                "-f", "mp3", "-",
+            ]
+
+            tmp_path = download_path + ".tmp"
+            p = _sp.Popen(ffmpeg_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+
+            first = p.stdout.read(8192)
+            if not first:
+                stderr = p.stderr.read() if p.stderr else b""
+                logger.warning(f"Proxy download falló: {stderr.decode(errors='replace')[:200]}")
+                p.terminate()
+                try:
+                    self._json(502, {"error": "Proxy download failed"})
+                except Exception:
+                    pass
+                return
+
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Video-Id", video_id)
+            self._cors_headers()
+            self.end_headers()
+
+            try:
+                self.wfile.write(f"{len(first):x}\r\n".encode())
+                self.wfile.write(first)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+
+                cache_file = open(tmp_path, "wb")
+                cache_file.write(first)
+                total_bytes = len(first)
+
+                try:
+                    while True:
+                        chunk = p.stdout.read(8192)
+                        if not chunk:
+                            break
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                        self.wfile.write(chunk)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                        cache_file.write(chunk)
+                        total_bytes += len(chunk)
+                finally:
+                    cache_file.close()
+
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+
+                os.replace(tmp_path, download_path)
+                self._cleanup_download_cache()
+                logger.info(f"Proxy download completado: {video_id} ({total_bytes} bytes)")
+                return
+
+            except BrokenPipeError:
+                logger.debug(f"Cliente desconectado durante proxy download de {video_id}")
+                try:
+                    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
+                        os.replace(tmp_path, download_path)
+                except Exception:
+                    pass
+                return
+
+        except Exception as e:
+            logger.warning(f"Proxy download excepción: {e}")
+            try:
+                if os.path.exists(download_path + ".tmp"):
+                    os.remove(download_path + ".tmp")
+            except Exception:
+                pass
+            try:
+                self._json(502, {"error": f"Proxy download failed: {e}"})
+            except Exception:
+                pass
 
     # ─── Invidious fallback para download ────────────────────
     def _proxy_download_invidious(self, video_id: str, title: str) -> None:
@@ -828,9 +927,105 @@ class APIHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-        # Todos los clients fallaron → intentar Invidious
-        logger.info(f"yt-dlp preview falló para {video_id}, intentando Invidious...")
+        # Todos los clients fallaron → intentar proxy SOCKS5
+        logger.info(f"yt-dlp preview falló para {video_id}, intentando proxy SOCKS5...")
+        from download_engine import _try_with_proxy
+        proxy_url = _try_with_proxy(video_id)
+        if proxy_url:
+            self._stream_proxy_preview(video_id, proxy_url)
+            return
+
+        # Fallback 2: intentar Invidious
+        logger.info(f"Proxy preview falló para {video_id}, intentando Invidious...")
         self._proxy_preview_invidious(video_id, title)
+
+    def _stream_proxy_preview(self, video_id: str, audio_url: str) -> None:
+        """Stream preview from a proxy-obtained audio URL."""
+        import subprocess as _sp
+
+        preview_path = self._get_preview_path(video_id)
+        os.makedirs(self.PREVIEW_CACHE_DIR, exist_ok=True)
+
+        try:
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", audio_url,
+                "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
+            ]
+
+            tmp_path = preview_path + ".tmp"
+            p = _sp.Popen(ffmpeg_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+
+            first = p.stdout.read(8192)
+            if not first:
+                stderr = p.stderr.read() if p.stderr else b""
+                logger.warning(f"Proxy preview falló: {stderr.decode(errors='replace')[:200]}")
+                p.terminate()
+                try:
+                    self._json(502, {"error": "Proxy preview failed"})
+                except Exception:
+                    pass
+                return
+
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-cache")
+            self._cors_headers()
+            self.end_headers()
+
+            try:
+                self.wfile.write(f"{len(first):x}\r\n".encode())
+                self.wfile.write(first)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+
+                cache_file = open(tmp_path, "wb")
+                cache_file.write(first)
+                total_bytes = len(first)
+
+                try:
+                    while True:
+                        chunk = p.stdout.read(8192)
+                        if not chunk:
+                            break
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                        self.wfile.write(chunk)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                        cache_file.write(chunk)
+                        total_bytes += len(chunk)
+                finally:
+                    cache_file.close()
+
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+
+                os.replace(tmp_path, preview_path)
+                self._cleanup_preview_cache()
+                logger.info(f"Proxy preview completado: {video_id} ({total_bytes} bytes)")
+                return
+
+            except BrokenPipeError:
+                logger.debug(f"Cliente desconectado durante proxy preview de {video_id}")
+                try:
+                    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
+                        os.replace(tmp_path, preview_path)
+                except Exception:
+                    pass
+                return
+
+        except Exception as e:
+            logger.warning(f"Proxy preview excepción: {e}")
+            try:
+                if os.path.exists(preview_path + ".tmp"):
+                    os.remove(preview_path + ".tmp")
+            except Exception:
+                pass
+            try:
+                self._json(502, {"error": f"Proxy preview failed: {e}"})
+            except Exception:
+                pass
 
     def _proxy_preview_invidious(self, video_id: str, title: str) -> None:
         """Preview vía Invidious cuando yt-dlp falla."""
