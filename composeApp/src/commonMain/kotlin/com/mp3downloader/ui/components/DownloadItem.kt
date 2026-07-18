@@ -1,7 +1,7 @@
 package com.mp3downloader.ui.components
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,7 +27,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -35,7 +34,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.DownloadTask
-import java.io.File
 
 @Composable
 fun DownloadItem(
@@ -97,18 +95,12 @@ fun DownloadItem(
                             style = MaterialTheme.typography.bodySmall,
                             color = statusColor(task.status)
                         )
-                        if (isCompleted && task.outputPath != null) {
-                            val fileSize = remember(task.outputPath) {
-                                val f = File(task.outputPath)
-                                if (f.exists()) formatFileSize(f.length()) else null
-                            }
-                            if (fileSize != null) {
-                                Text(
-                                    text = " • $fileSize",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                        if (isCompleted && task.fileSizeBytes > 0L) {
+                            Text(
+                                text = "  ${formatFileSize(task.fileSizeBytes)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -177,28 +169,46 @@ fun DownloadItem(
                 }
             }
 
+            // ── Progress bar with percentage ──
             if (task.status == DownloadStatus.DOWNLOADING) {
                 Spacer(modifier = Modifier.height(8.dp))
-                if (task.progress < 0f) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        progress = { task.progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (task.progress < 0f) {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(4.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { task.progress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(4.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        }
+                    }
+                    if (task.progress >= 0f) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${(task.progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
 
+            // ── Output path (completed) ──
             if (isCompleted && task.outputPath != null) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
@@ -210,6 +220,7 @@ fun DownloadItem(
                 )
             }
 
+            // ── Error message (failed) ──
             if (isFailed && task.error != null) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(

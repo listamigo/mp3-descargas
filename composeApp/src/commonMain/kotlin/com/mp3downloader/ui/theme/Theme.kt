@@ -17,11 +17,11 @@ enum class AppTheme(val label: String, val icon: String) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  DARK  —  Burnt Sienna (terracotta suave, menos saturado que el rojo vivo)
+//  DARK  —  Rojo Granate Intenso (ladrillo profundo, ni pastel ni vibrante)
 // ══════════════════════════════════════════════════════════════════════════
-private val DarkPrimary      = Color(0xFFC0624E)
+private val DarkPrimary      = Color(0xFFA63D2A)
 private val DarkOnPrimary    = Color.White
-private val DarkContainer    = Color(0xFF3D1A12)
+private val DarkContainer    = Color(0xFF3D1008)
 private val DarkOnContainer  = Color(0xFFFFD4C4)
 private val DarkSecondary      = Color(0xFFA0A0A0)
 private val DarkOnSecondary    = Color.Black
@@ -40,9 +40,9 @@ private val DarkErrorContainer    = Color(0xFF3D1111)
 private val DarkTertiary     = Color(0xFF4FC3B7)
 
 // ══════════════════════════════════════════════════════════════════════════
-//  LIGHT  —  Warm Ochre (tostado / ámbar, profesional y cálido)
+//  LIGHT  —  Burnt Sienna Intenso (ocre tostado profundo)
 // ══════════════════════════════════════════════════════════════════════════
-private val LightPrimary      = Color(0xFFA6633E)
+private val LightPrimary      = Color(0xFFC94A20)
 private val LightOnPrimary    = Color.White
 private val LightContainer    = Color(0xFFFFE0CC)
 private val LightOnContainer  = Color(0xFF3D1A0A)
@@ -63,11 +63,11 @@ private val LightErrorContainer    = Color(0xFFFFDAD6)
 private val LightTertiary     = Color(0xFF3D8C7A)
 
 // ══════════════════════════════════════════════════════════════════════════
-//  NEON  —  Muted Purple (violeta neón, mantiene la vibra cyberpunk)
+//  NEON  —  Deep Violet (violeta intenso)
 // ══════════════════════════════════════════════════════════════════════════
-private val NeonPrimary      = Color(0xFF9C7FC4)
+private val NeonPrimary      = Color(0xFF8C60C8)
 private val NeonOnPrimary    = Color.White
-private val NeonContainer    = Color(0xFF2D1A4A)
+private val NeonContainer    = Color(0xFF2D1055)
 private val NeonOnContainer  = Color(0xFFE0CCFF)
 private val NeonSecondary      = Color(0xFFFFD93D)
 private val NeonOnSecondary    = Color.Black
@@ -86,11 +86,11 @@ private val NeonErrorContainer    = Color(0xFF3D001A)
 private val NeonTertiary     = Color(0xFF00E5FF)
 
 // ══════════════════════════════════════════════════════════════════════════
-//  MIDNIGHT  —  Dusty Blue (azul acero, cielo nocturno sereno)
+//  MIDNIGHT  —  Steel Blue Intenso (azul acero profundo)
 // ══════════════════════════════════════════════════════════════════════════
-private val MidnightPrimary      = Color(0xFF5D8FC4)
+private val MidnightPrimary      = Color(0xFF3578C8)
 private val MidnightOnPrimary    = Color.White
-private val MidnightContainer    = Color(0xFF0D2A4A)
+private val MidnightContainer    = Color(0xFF0D2055)
 private val MidnightOnContainer  = Color(0xFFC8E0FF)
 private val MidnightSecondary      = Color(0xFF90CAF9)
 private val MidnightOnSecondary    = Color(0xFF0D1B2A)
@@ -109,11 +109,11 @@ private val MidnightErrorContainer    = Color(0xFF3D1111)
 private val MidnightTertiary     = Color(0xFF4DD0B7)
 
 // ══════════════════════════════════════════════════════════════════════════
-//  GLASS  —  Lavender Purple (púrpura lavanda, efecto vidrio)
+//  GLASS  —  Deep Lavender (púrpura lavanda intenso)
 // ══════════════════════════════════════════════════════════════════════════
-private val GlassPrimary      = Color(0xFF8A7CC4)
+private val GlassPrimary      = Color(0xFF7860C8)
 private val GlassOnPrimary    = Color.White
-private val GlassContainer    = Color(0xFF2A1A4A)
+private val GlassContainer    = Color(0xFF2A1055)
 private val GlassOnContainer  = Color(0xFFD4C8FF)
 private val GlassSecondary      = Color(0xFFA0A0C0)
 private val GlassOnSecondary    = Color.Black
@@ -132,11 +132,11 @@ private val GlassErrorContainer    = Color(0xFF3D001A)
 private val GlassTertiary     = Color(0xFFFFD54F)
 
 // ══════════════════════════════════════════════════════════════════════════
-//  SAKURA  —  Dusty Rose (rosa polvo, cerezos en flor)
+//  SAKURA  —  Rosewood Intenso (rosa cerezo profundo)
 // ══════════════════════════════════════════════════════════════════════════
-private val SakuraPrimary      = Color(0xFFD48AA8)
+private val SakuraPrimary      = Color(0xFFC86080)
 private val SakuraOnPrimary    = Color.White
-private val SakuraContainer    = Color(0xFF3D1520)
+private val SakuraContainer    = Color(0xFF3D0830)
 private val SakuraOnContainer  = Color(0xFFFFD0DC)
 private val SakuraSecondary      = Color(0xFFC4A0B0)
 private val SakuraOnSecondary    = Color.Black

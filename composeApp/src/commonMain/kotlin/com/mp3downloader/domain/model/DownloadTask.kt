@@ -8,5 +8,6 @@ data class DownloadTask(
     val status: DownloadStatus = DownloadStatus.IDLE,
     val progress: Float = 0f,
     val outputPath: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val fileSizeBytes: Long = 0L
 )

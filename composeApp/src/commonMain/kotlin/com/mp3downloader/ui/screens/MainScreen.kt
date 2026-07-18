@@ -121,6 +121,27 @@ fun MainScreen(viewModel: MainViewModel) {
     val searchVersion by viewModel.searchVersion.collectAsState()
     // Persiste la posición de scroll al cambiar de pestaña y volver
     val searchListState = rememberLazyListState()
+    var savedScrollIndex by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var savedScrollOffset by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+
+    // Al cambiar a DOWNLOADS: guardar la posición de scroll del SearchTab
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == AppTab.DOWNLOADS) {
+            savedScrollIndex = searchListState.firstVisibleItemIndex
+            savedScrollOffset = searchListState.firstVisibleItemScrollOffset
+        }
+    }
+    // Al volver a SEARCH: restaurar la posición de scroll guardada
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == AppTab.SEARCH && (savedScrollIndex > 0 || savedScrollOffset > 0)) {
+            // scrollToItem debe lanzarse después de que la LazyColumn se haya
+            // compuesto. Un pequeño delay permite que el layout esté listo.
+            kotlinx.coroutines.delay(50)
+            try {
+                searchListState.scrollToItem(savedScrollIndex, savedScrollOffset)
+            } catch (_: Exception) { }
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.snackbarEvent.collect { event ->

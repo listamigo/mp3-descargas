@@ -296,12 +296,19 @@ class MainViewModel(
                     val outputDir = getOutputDirectory()
 
                     repository.download(song, outputDir).collect { result ->
+                        // Capturar tamaño del archivo original antes de que outputPath
+                        // se reemplace por un content:// URI (MediaStore en API 29+).
+                        val savedFileSize = if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
+                            java.io.File(result.outputPath).let { if (it.exists()) it.length() else 0L }
+                        } else 0L
+
                         updateTask(
                             songId = result.songId,
                             status = result.status,
                             progress = result.progress,
                             outputPath = result.outputPath,
-                            error = result.error
+                            error = result.error,
+                            fileSizeBytes = savedFileSize
                         )
 
                         if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
@@ -390,7 +397,8 @@ class MainViewModel(
         status: DownloadStatus? = null,
         progress: Float? = null,
         outputPath: String? = null,
-        error: String? = null
+        error: String? = null,
+        fileSizeBytes: Long? = null
     ) {
         _downloads.value = _downloads.value.map { task ->
             if (task.song.id == songId) {
@@ -398,7 +406,8 @@ class MainViewModel(
                     status = status ?: task.status,
                     progress = progress ?: task.progress,
                     outputPath = outputPath ?: task.outputPath,
-                    error = error ?: task.error
+                    error = error ?: task.error,
+                    fileSizeBytes = fileSizeBytes ?: task.fileSizeBytes
                 )
             } else task
         }
