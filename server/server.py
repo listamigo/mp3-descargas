@@ -804,6 +804,7 @@ class APIHandler(BaseHTTPRequestHandler):
             ]
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", "-",
+                "-t", "60",
                 "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
@@ -813,86 +814,80 @@ class APIHandler(BaseHTTPRequestHandler):
                 p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
                 p1.stdout.close()
 
-                # Leer primer chunk para validar que hay audio
-                first = p2.stdout.read(8192)
-                if not first:
-                    stderr = b""
-                    if p1.stderr:
-                        stderr += (p1.stderr.read() or b"")
-                    if p2.stderr:
-                        stderr += (p2.stderr.read() or b"")
+                # ── Codificación completa → servir con Content-Length ──
+                # ffmpeg con -t 60 produce exactamente 60s de audio y sale,
+                # aunque yt-dlp aún esté descargando. Esto nos permite
+                # servir el archivo con Content-Length, que Android
+                # MediaPlayer necesita para reproducir la duración completa.
+                deadline = time.time() + 30
+                timed_out = False
+                with open(tmp_path, "wb") as f:
+                    while time.time() < deadline:
+                        chunk = p2.stdout.read(8192)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                    else:
+                        timed_out = True
+
+                if timed_out:
+                    logger.warning(f"Preview timeout para {video_id} (client {client})")
+                    p1.kill()
+                    p2.kill()
+                    try:
+                        p2.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    last_err = "timeout en codificación ffmpeg"
+                    record_failure(client)
+                    continue
+
+                p2.wait()
+                p1.terminate()
+
+                file_size = os.path.getsize(tmp_path)
+                if file_size < 1024:
+                    stderr = (p1.stderr.read() or b"") + (p2.stderr.read() or b"")
                     last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
                     record_failure(client)
                     logger.warning(f"Preview falló (client {client}): {last_err}")
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                     try:
                         p1.terminate(); p2.terminate()
                     except Exception:
                         pass
                     continue
 
-                # ── Enviar headers INMEDIATAMENTE ──
-                # Usamos Transfer-Encoding: chunked con HTTP/1.1 para que
-                # Android MediaPlayer reciba datos progresivamente y pueda
-                # empezar a reproducir con solo ~2-5 segundos de buffer,
-                # sin esperar la descarga completa.
-                self.protocol_version = "HTTP/1.1"
+                # ── Servir con Content-Length ──
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("Transfer-Encoding", "chunked")
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "public, max-age=3600")
                 self._cors_headers()
                 self.end_headers()
 
-                try:
-                    # Primer chunk
-                    self.wfile.write(f"{len(first):x}\r\n".encode())
-                    self.wfile.write(first)
-                    self.wfile.write(b"\r\n")
-                    self.wfile.flush()
+                with open(tmp_path, "rb") as f:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
 
-                    # Tee: escribir a cache simultáneamente
-                    cache_file = open(tmp_path, "wb")
-                    cache_file.write(first)
-                    total_bytes = len(first)
+                # Renombrar temp a cache (atómico)
+                os.replace(tmp_path, preview_path)
+                self._cleanup_preview_cache()
 
-                    try:
-                        while True:
-                            chunk = p2.stdout.read(8192)
-                            if not chunk:
-                                break
-                            # Chunked encoding
-                            self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                            self.wfile.write(chunk)
-                            self.wfile.write(b"\r\n")
-                            self.wfile.flush()
-                            # Cache
-                            cache_file.write(chunk)
-                            total_bytes += len(chunk)
-                    finally:
-                        cache_file.close()
-
-                    # Chunk final
-                    self.wfile.write(b"0\r\n\r\n")
-                    self.wfile.flush()
-
-                    # Renombrar temp a cache (atómico)
-                    os.replace(tmp_path, preview_path)
-                    self._cleanup_preview_cache()
-
-                    record_success(client)
-                    logger.info(f"Preview streaming completado: {video_id} "
-                                f"(client={client}, {total_bytes} bytes)")
-                    return
-
-                except BrokenPipeError:
-                    logger.debug(f"Cliente desconectado durante preview de {video_id}")
-                    # Guardar cache aunque el cliente se desconecte
-                    try:
-                        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
-                            os.replace(tmp_path, preview_path)
-                    except Exception:
-                        pass
-                    return
+                record_success(client)
+                logger.info(f"Preview completado: {video_id} (client={client}, {file_size} bytes)")
+                return
 
             except Exception as e:
                 last_err = str(e)[:300]
@@ -949,16 +944,45 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", audio_url,
+                "-t", "60",
                 "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
             tmp_path = preview_path + ".tmp"
             p = _sp.Popen(ffmpeg_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
 
-            first = p.stdout.read(8192)
-            if not first:
+            # ── Codificar completo → servir con Content-Length ──
+            deadline = time.time() + 30
+            with open(tmp_path, "wb") as f:
+                while time.time() < deadline:
+                    chunk = p.stdout.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                else:
+                    logger.warning(f"Proxy preview timeout para {video_id}")
+                    p.kill()
+                    p.stdout.close()
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    try:
+                        self._json(502, {"error": "Proxy preview timeout"})
+                    except Exception:
+                        pass
+                    return
+
+            p.wait()
+
+            file_size = os.path.getsize(tmp_path)
+            if file_size < 1024:
                 stderr = p.stderr.read() if p.stderr else b""
                 logger.warning(f"Proxy preview falló: {stderr.decode(errors='replace')[:200]}")
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
                 p.terminate()
                 try:
                     self._json(502, {"error": "Proxy preview failed"})
@@ -966,54 +990,26 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
                 return
 
-            self.protocol_version = "HTTP/1.1"
+            # ── Servir con Content-Length ──
             self.send_response(200)
             self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Transfer-Encoding", "chunked")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
             self._cors_headers()
             self.end_headers()
 
-            try:
-                self.wfile.write(f"{len(first):x}\r\n".encode())
-                self.wfile.write(first)
-                self.wfile.write(b"\r\n")
-                self.wfile.flush()
+            with open(tmp_path, "rb") as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
 
-                cache_file = open(tmp_path, "wb")
-                cache_file.write(first)
-                total_bytes = len(first)
-
-                try:
-                    while True:
-                        chunk = p.stdout.read(8192)
-                        if not chunk:
-                            break
-                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                        self.wfile.write(chunk)
-                        self.wfile.write(b"\r\n")
-                        self.wfile.flush()
-                        cache_file.write(chunk)
-                        total_bytes += len(chunk)
-                finally:
-                    cache_file.close()
-
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
-
-                os.replace(tmp_path, preview_path)
-                self._cleanup_preview_cache()
-                logger.info(f"Proxy preview completado: {video_id} ({total_bytes} bytes)")
-                return
-
-            except BrokenPipeError:
-                logger.debug(f"Cliente desconectado durante proxy preview de {video_id}")
-                try:
-                    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
-                        os.replace(tmp_path, preview_path)
-                except Exception:
-                    pass
-                return
+            os.replace(tmp_path, preview_path)
+            self._cleanup_preview_cache()
+            logger.info(f"Proxy preview completado: {video_id} ({file_size} bytes)")
+            return
 
         except Exception as e:
             logger.warning(f"Proxy preview excepción: {e}")
@@ -1045,16 +1041,45 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", audio_url,
+                "-t", "60",
                 "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
             tmp_path = preview_path + ".tmp"
             p = _sp.Popen(ffmpeg_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
 
-            first = p.stdout.read(8192)
-            if not first:
+            # ── Codificar completo → servir con Content-Length ──
+            deadline = time.time() + 30
+            with open(tmp_path, "wb") as f:
+                while time.time() < deadline:
+                    chunk = p.stdout.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                else:
+                    logger.warning(f"Invidious preview timeout para {video_id}")
+                    p.kill()
+                    p.stdout.close()
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    try:
+                        self._json(502, {"error": "Invidious preview timeout"})
+                    except Exception:
+                        pass
+                    return
+
+            p.wait()
+
+            file_size = os.path.getsize(tmp_path)
+            if file_size < 1024:
                 stderr = p.stderr.read() if p.stderr else b""
                 logger.warning(f"Invidious preview falló: {stderr.decode(errors='replace')[:200]}")
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
                 p.terminate()
                 try:
                     self._json(502, {"error": "Invidious preview failed"})
@@ -1062,54 +1087,26 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
                 return
 
-            self.protocol_version = "HTTP/1.1"
+            # ── Servir con Content-Length ──
             self.send_response(200)
             self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Transfer-Encoding", "chunked")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
             self._cors_headers()
             self.end_headers()
 
-            try:
-                self.wfile.write(f"{len(first):x}\r\n".encode())
-                self.wfile.write(first)
-                self.wfile.write(b"\r\n")
-                self.wfile.flush()
+            with open(tmp_path, "rb") as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
 
-                cache_file = open(tmp_path, "wb")
-                cache_file.write(first)
-                total_bytes = len(first)
-
-                try:
-                    while True:
-                        chunk = p.stdout.read(8192)
-                        if not chunk:
-                            break
-                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                        self.wfile.write(chunk)
-                        self.wfile.write(b"\r\n")
-                        self.wfile.flush()
-                        cache_file.write(chunk)
-                        total_bytes += len(chunk)
-                finally:
-                    cache_file.close()
-
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
-
-                os.replace(tmp_path, preview_path)
-                self._cleanup_preview_cache()
-                logger.info(f"Invidious preview completado: {video_id} ({total_bytes} bytes)")
-                return
-
-            except BrokenPipeError:
-                logger.debug(f"Cliente desconectado durante Invidious preview de {video_id}")
-                try:
-                    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
-                        os.replace(tmp_path, preview_path)
-                except Exception:
-                    pass
-                return
+            os.replace(tmp_path, preview_path)
+            self._cleanup_preview_cache()
+            logger.info(f"Invidious preview completado: {video_id} ({file_size} bytes)")
+            return
 
         except Exception as e:
             logger.warning(f"Invidious preview excepción: {e}")
