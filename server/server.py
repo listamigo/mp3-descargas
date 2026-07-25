@@ -804,12 +804,7 @@ class APIHandler(BaseHTTPRequestHandler):
             ]
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", "-",
-                "-codec:a", "libmp3lame", "-b:a", "128k", "-ar", "44100",
-                "-id3v2_version", "3",
-                "-fflags", "+nobuffer",
-                "-flags", "+low_delay",
-                "-flush_packets", "1",
-                "-f", "mp3", "-",
+                "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
             tmp_path = preview_path + ".tmp"
@@ -954,12 +949,7 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", audio_url,
-                "-codec:a", "libmp3lame", "-b:a", "128k", "-ar", "44100",
-                "-id3v2_version", "3",
-                "-fflags", "+nobuffer",
-                "-flags", "+low_delay",
-                "-flush_packets", "1",
-                "-f", "mp3", "-",
+                "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
             tmp_path = preview_path + ".tmp"
@@ -1055,12 +1045,7 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             ffmpeg_cmd = [
                 "ffmpeg", "-y", "-i", audio_url,
-                "-codec:a", "libmp3lame", "-b:a", "128k", "-ar", "44100",
-                "-id3v2_version", "3",
-                "-fflags", "+nobuffer",
-                "-flags", "+low_delay",
-                "-flush_packets", "1",
-                "-f", "mp3", "-",
+                "-f", "mp3", "-ab", "128k", "-ar", "44100", "-",
             ]
 
             tmp_path = preview_path + ".tmp"
