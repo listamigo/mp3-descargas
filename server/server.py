@@ -283,6 +283,15 @@ class APIHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if path == "/api/clear-preview-cache":
+                result = self._clear_preview_cache()
+                self._json(200, {
+                    "status": "ok",
+                    "message": f"Preview cache cleared. {result['deleted']} files deleted.",
+                    **result,
+                })
+                return
+
             self._json(404, {"error": f"Not found: {path}"})
 
         except Exception as e:
@@ -742,6 +751,26 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
         except Exception:
             pass
+
+    def _clear_preview_cache(self) -> dict:
+        """Elimina TODOS los archivos del caché de preview."""
+        deleted = 0
+        errors = 0
+        try:
+            if not os.path.isdir(self.PREVIEW_CACHE_DIR):
+                return {"deleted": 0}
+            for f in os.listdir(self.PREVIEW_CACHE_DIR):
+                if f.endswith(".mp3") or f.endswith(".tmp"):
+                    try:
+                        os.remove(os.path.join(self.PREVIEW_CACHE_DIR, f))
+                        deleted += 1
+                    except Exception:
+                        errors += 1
+            logger.info(f"Preview cache limpiado: {deleted} archivos eliminados")
+            return {"deleted": deleted, "errors": errors}
+        except Exception as e:
+            logger.error(f"Error limpiando preview cache: {e}")
+            return {"deleted": deleted, "errors": errors, "error": str(e)}
 
     def _proxy_preview(self, video_id: str, title: str) -> None:
         """Preview con streaming progresivo (chunked) + cache.
