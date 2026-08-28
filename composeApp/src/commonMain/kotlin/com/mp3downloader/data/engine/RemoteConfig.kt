@@ -4,7 +4,7 @@ import com.mp3downloader.data.storage.provideStorageDirectory
 import java.io.File
 
 object RemoteConfig {
-    const val DEFAULT_SERVER_URL = "https://mp3downloader-server-production.up.railway.app"
+    const val DEFAULT_SERVER_URL = "https://mp3downloader-server.onrender.com"
 
     private val configFile: File
         get() = File(provideStorageDirectory(), "settings.json")
