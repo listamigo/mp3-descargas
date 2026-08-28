@@ -80,13 +80,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.sin
+import kotlin.random.Random
 import com.mp3downloader.data.engine.RemoteConfig
 import com.mp3downloader.data.storage.saveAppearance
 import com.mp3downloader.data.storage.persistWallpaperImage
@@ -237,6 +251,16 @@ fun MainScreen(viewModel: MainViewModel) {
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
         Box(modifier = Modifier.fillMaxSize()) {
+            // Wallpaper behind everything
+            if (wallpaperUri != null) {
+                WallpaperOverlay(
+                    uri = wallpaperUri,
+                    opacity = wallpaperOpacity
+                )
+            } else {
+                DefaultWallpaper()
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -308,14 +332,6 @@ fun MainScreen(viewModel: MainViewModel) {
                     )
                 }
             }
-
-            // Wallpaper overlay on top of everything
-            if (wallpaperUri != null) {
-                WallpaperOverlay(
-                    uri = wallpaperUri,
-                    opacity = wallpaperOpacity
-                )
-            }
         }
     }
 }
@@ -347,6 +363,305 @@ private fun WallpaperOverlay(uri: String, opacity: Float) {
             contentScale = ContentScale.Crop,
             alpha = opacity
         )
+    }
+}
+
+@Composable
+private fun DefaultWallpaper() {
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+
+    // Pulsing glow animation
+    val infiniteTransition = rememberInfiniteTransition(label = "bg")
+    val glowPulse by infiniteTransition.animateFloat(
+        initialValue = 0.04f,
+        targetValue = 0.10f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowPulse"
+    )
+    val glowPulse2 by infiniteTransition.animateFloat(
+        initialValue = 0.08f,
+        targetValue = 0.03f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2500, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowPulse2"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0A0A0A))
+    ) {
+        // Top glow (primary color) - pulses
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(350.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            primary.copy(alpha = glowPulse),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
+
+        // Bottom glow (tertiary color) - pulses offset
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(300.dp)
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            tertiary.copy(alpha = glowPulse2)
+                        )
+                    )
+                )
+        )
+
+        // Center radial glow (primary) - pulses
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            primary.copy(alpha = glowPulse2 * 0.5f),
+                            Color.Transparent
+                        ),
+                        radius = 900f
+                    )
+                )
+        )
+    }
+}
+
+@Composable
+private fun VinylDiscEmptyState(
+    searchQuery: String,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    val surface = MaterialTheme.colorScheme.surface
+    val background = MaterialTheme.colorScheme.background
+
+    // Rotation animation
+    val infiniteTransition = rememberInfiniteTransition(label = "disc")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(7800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation"
+    )
+
+    // Pulsing glow animation
+    val glowPulse by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 0.8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowPulse"
+    )
+
+    val glowPulse2 by infiniteTransition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowPulse2"
+    )
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Spacer(Modifier.height(80.dp))
+
+            // Disc container with glow
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(220.dp)
+            ) {
+                // Glow layer 1 (primary color) - pulsing
+                Box(
+                    modifier = Modifier
+                        .size(180.dp)
+                        .blur(60.dp)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    primary.copy(alpha = glowPulse * 0.6f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+
+                // Glow layer 2 (tertiary color) - pulsing offset
+                Box(
+                    modifier = Modifier
+                        .size(160.dp)
+                        .blur(50.dp)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    tertiary.copy(alpha = glowPulse2 * 0.5f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+
+                // Vinyl disc with rotation arcs drawn at dynamic angles
+                // (no Modifier.rotate — arcs use startAngle + rotation so they
+                // stay correctly attached to the disc regardless of orientation)
+                androidx.compose.foundation.Canvas(
+                    modifier = Modifier.size(150.dp)
+                ) {
+                    val cx = size.width / 2f
+                    val cy = size.height / 2f
+                    val outerRadius = cx * 0.9f
+
+                    // Outer ring with sweep gradient (primary → tertiary)
+                    drawCircle(
+                        brush = Brush.sweepGradient(
+                            colors = listOf(
+                                primary,
+                                primary,
+                                tertiary,
+                                primary,
+                                primary
+                            )
+                        ),
+                        radius = outerRadius,
+                        center = androidx.compose.ui.geometry.Offset(cx, cy),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 8f)
+                    )
+
+                    // Disc body (dark)
+                    drawCircle(
+                        color = surface,
+                        radius = outerRadius - 10f,
+                        center = androidx.compose.ui.geometry.Offset(cx, cy)
+                    )
+
+                    // Arc radius relative to disc center (inside the disc body)
+                    val arcRadius = outerRadius * 0.72f
+                    val arcRectSize = arcRadius * 2f
+                    val arcTopLeft = androidx.compose.ui.geometry.Offset(
+                        cx - arcRadius,
+                        cy - arcRadius
+                    )
+
+                    // Rotation marker arc 1 (primary) — dynamic angle
+                    drawArc(
+                        color = primary,
+                        startAngle = -45f + rotation,
+                        sweepAngle = 90f,
+                        useCenter = false,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = 5f,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round
+                        ),
+                        topLeft = arcTopLeft,
+                        size = androidx.compose.ui.geometry.Size(arcRectSize, arcRectSize)
+                    )
+
+                    // Rotation marker arc 2 (tertiary) — dynamic angle, opposite side
+                    drawArc(
+                        color = tertiary,
+                        startAngle = 135f + rotation,
+                        sweepAngle = 90f,
+                        useCenter = false,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = 5f,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round
+                        ),
+                        topLeft = arcTopLeft,
+                        size = androidx.compose.ui.geometry.Size(arcRectSize, arcRectSize)
+                    )
+
+                    // Groove rings
+                    for (i in 1..3) {
+                        drawCircle(
+                            color = surface.copy(alpha = 0.6f),
+                            radius = outerRadius * (0.4f + i * 0.12f),
+                            center = androidx.compose.ui.geometry.Offset(cx, cy),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 0.8f)
+                        )
+                    }
+
+                    // Center hole
+                    drawCircle(
+                        color = background,
+                        radius = outerRadius * 0.2f,
+                        center = androidx.compose.ui.geometry.Offset(cx, cy)
+                    )
+
+                    // Center dot with gradient
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                primary,
+                                tertiary
+                            )
+                        ),
+                        radius = outerRadius * 0.08f,
+                        center = androidx.compose.ui.geometry.Offset(cx, cy)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(40.dp))
+
+            // Title text
+            Text(
+                text = if (searchQuery.isBlank())
+                    "Busca tu música favorita"
+                else
+                    "Sin resultados",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // Subtitle
+            Text(
+                text = if (searchQuery.isBlank())
+                    "Encuentra y descarga canciones, albumes y podcast en alta calidad."
+                else
+                    "Intenta con otra búsqueda",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 24.dp)
+            )
+        }
     }
 }
 
@@ -407,39 +722,12 @@ private fun SearchTab(
         }
 
         if (searchResults.isEmpty() && !isSearching && searchError == null) {
-            Box(
+            VinylDiscEmptyState(
+                searchQuery = searchQuery,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(32.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.Brightness6,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        text = if (searchQuery.isBlank())
-                            "Busca tu música favorita"
-                        else
-                            "Sin resultados",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = if (searchQuery.isBlank())
-                            "Escribe el nombre de una canción, artista o video"
-                        else
-                            "Intenta con otra búsqueda",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                }
-            }
+                    .padding(32.dp)
+            )
         } else {
             // Scroll al inicio solo en búsquedas nuevas (no en loadMore)
             LaunchedEffect(searchVersion) {
@@ -730,7 +1018,7 @@ private fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val themes = AppTheme.entries.take(3)
+                    val themes = AppTheme.entries.take(4)
                     themes.forEach { theme ->
                         ThemeChip(
                             theme = theme,
@@ -750,7 +1038,7 @@ private fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val themes = AppTheme.entries.drop(3)
+                    val themes = AppTheme.entries.drop(4)
                     themes.forEach { theme ->
                         ThemeChip(
                             theme = theme,
@@ -892,7 +1180,7 @@ private fun SettingsDialog(
                     value = url,
                     onValueChange = { url = it },
                     label = { Text("URL del servidor") },
-                    placeholder = { Text("https://mp3downloader-server-production.up.railway.app") },
+                    placeholder = { Text("https://mp3downloader-server.onrender.com") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
