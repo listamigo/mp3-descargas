@@ -9,4 +9,27 @@ services:
     envVars:
       - key: PORT
         value: 8899
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_DIR
+        value: /tmp/logs
+      - key: COOKIES_FILE
+        value: /tmp/cookies/cookies.txt
+      - key: YTDLP_VERSION
+        value: 2026.6.9
     healthCheckPath: /api/health
+    # Prevenir spin-down con health checks más frecuentes
+    healthCheckPolicy:
+      responseTimeoutSeconds: 30
+      failureThreshold: 5
+      successThreshold: 1
+    # Configuración de build
+    buildFilter:
+      ignoredPaths:
+        - '**/*.md'
+        - '**/*.png'
+        - '**/*.deb'
+        - 'desktop/**'
+        - 'composeApp/**'
+        - 'deb-package/**'
+        - 'research/**'

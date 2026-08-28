@@ -183,7 +183,10 @@ class APIHandler(BaseHTTPRequestHandler):
 
     # Silenciar logs de cada petición (usamos nuestro propio logging)
     def log_message(self, fmt, *args):
-        logger.debug(f"{args[0]} {args[1]} {args[2]}")
+        try:
+            logger.debug(fmt % args)
+        except Exception:
+            pass
 
     # ─── CORS ────────────────────────────────────────────────
     def _cors_headers(self):
