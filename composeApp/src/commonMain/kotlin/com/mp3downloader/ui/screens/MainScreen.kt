@@ -1180,7 +1180,7 @@ private fun SettingsDialog(
                     value = url,
                     onValueChange = { url = it },
                     label = { Text("URL del servidor") },
-                    placeholder = { Text("https://mp3downloader-server.onrender.com") },
+                    placeholder = { Text("https://mp3-descargas-1.onrender.com") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
