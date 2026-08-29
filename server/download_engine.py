@@ -347,6 +347,64 @@ def _try_with_proxy(video_id: str) -> str | None:
     return None
 
 
+def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[str]:
+    """Comando yt-dlp para descargar el audio COMPLETO vía un proxy SOCKS5.
+
+    A diferencia de `_try_with_proxy` (que solo obtiene la URL con
+    `--get-url`), aquí yt-dlp baja los bytes del audio a través del proxy
+    y los vuelca a stdout. Esto es OBLIGATORIO: YouTube firma la URL de
+    googlevideo para la IP que la solicitó, así que descargar esa URL
+    directo desde la IP del servidor siempre devuelve 403 ("Proxy download
+    failed"). Al pasar TODO el tráfico por el proxy, la firma aplica a la
+    misma IP y la descarga funciona.
+    """
+    cmd = [
+        "yt-dlp", "--no-warnings",
+        "--proxy", proxy,
+        "--user-agent", random.choice(USER_AGENTS),
+        "--extractor-args", "youtube:player_client=tv_embedded",
+        "-f", "bestaudio/best",
+        "--no-playlist", "--no-part",
+    ]
+    if output_stdout:
+        cmd.append("-o")
+        cmd.append("-")
+    else:
+        cmd += ["-o", f"/tmp/mp3downloader_{video_id}.%(ext)s"]
+    cmd.append(f"https://youtube.com/watch?v={video_id}")
+    return cmd
+
+
+def _find_working_proxy(video_id: str) -> str | None:
+    """Encuentra un proxy que pueda resolver el video (validación rápida).
+
+    Prueba varios proxies con `--get-url`; devuelve el primero que
+    responda. La descarga posterior (`_proxy_cmd`) usará ese MISMO proxy
+    para que la firma de la URL coincida con la IP de descarga.
+    """
+    proxies = _fetch_free_proxies()
+    if not proxies:
+        return None
+    url = f"https://youtube.com/watch?v={video_id}"
+    for proxy in proxies[:8]:
+        try:
+            cmd = [
+                "yt-dlp", "--no-warnings",
+                "--proxy", proxy,
+                "--user-agent", random.choice(USER_AGENTS),
+                "--extractor-args", "youtube:player_client=tv_embedded",
+                "-f", "bestaudio/best",
+                "--get-url", url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode == 0 and result.stdout.strip():
+                logger.info(f"Proxy activo para {video_id}: {proxy}")
+                return proxy
+        except Exception:
+            continue
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════
 # Invidious fallback — funciona sin cookies/proxy
 # ────────────────────────────────────────────────────────────────
@@ -724,42 +782,49 @@ class DownloadEngine:
                             os.remove(f)
 
         # Fallback 1: intentar descarga vía proxy SOCKS5 gratuito
+        # (la descarga COMPLETA pasa por el proxy — ver _proxy_cmd)
         logger.info(f"yt-dlp falló para {song.id}, intentando proxy SOCKS5...")
         if on_progress:
             on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "Proxy fallback")
 
-        proxy_url = _try_with_proxy(song.id)
-        if proxy_url:
+        proxy = _find_working_proxy(song.id)
+        if proxy:
             try:
                 if on_progress:
                     on_progress(DownloadStatus.DOWNLOADING, 0.0, "", "Proxy download")
-                # Descargar vía URL obtenida del proxy
-                import urllib.request as _urllib_req
-                proxy_req = _urllib_req.Request(proxy_url, headers={
-                    "User-Agent": random.choice(USER_AGENTS),
-                })
-                with _urllib_req.urlopen(proxy_req, timeout=60) as resp:
-                    total = int(resp.headers.get("Content-Length", 0))
-                    downloaded = 0
-                    tmp_path = output_path + ".tmp"
-                    with open(tmp_path, "wb") as f:
-                        while True:
-                            chunk = resp.read(8192)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if on_progress and total > 0:
-                                on_progress(DownloadStatus.DOWNLOADING, downloaded / total, "", "")
-                    os.replace(tmp_path, output_path)
+                # yt-dlp baja el audio por el proxy y lo vuelca a stdout;
+                # ffmpeg lo convierte a MP3 sin reintentar la red.
+                import subprocess as _sp
+                yt_cmd = _proxy_cmd(song.id, proxy, output_stdout=True)
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", "-",
+                    "-codec:a", "libmp3lame", "-b:a", "256k",
+                    "-id3v2_version", "3",
+                    "-f", "mp3", output_path + ".tmp",
+                ]
+                p1 = _sp.Popen(yt_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                p1.stdout.close()
+                stderr2 = p2.stderr.read()
+                stderr1 = p1.stderr.read()
+                p1.wait(); p2.wait()
+                if os.path.isfile(output_path + ".tmp"):
+                    os.replace(output_path + ".tmp", output_path)
                     if on_progress:
                         on_progress(DownloadStatus.CONVERTING, 0.7, "", "")
                     self._embed_metadata(output_path, thumb_path)
                     if on_complete:
                         on_complete(output_path, None)
                     return
+                logger.warning(f"Proxy full download failed for {song.id}: "
+                               f"{stderr1[:300]} {stderr2[:300]}")
+                p1.terminate(); p2.terminate()
             except Exception as e:
-                logger.warning(f"Proxy download failed for {song.id}: {e}")
+                logger.warning(f"Proxy full download failed for {song.id}: {e}")
+                try: p1.terminate()
+                except Exception: pass
+                try: p2.terminate()
+                except Exception: pass
                 try:
                     os.remove(output_path + ".tmp")
                 except Exception:
