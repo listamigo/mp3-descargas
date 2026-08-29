@@ -1,0 +1,73 @@
+# Dockerfile para Railway FREE (modo serverless / Nixpacks derived)
+#
+# IMPORTANTE: el plan gratuito de Railway SOLO permite deploys serverless
+# (sin proceso persistente en background). Por eso este contenedor:
+#   - NO arranca el server HTTP del PO provider (no se mantiene vivo).
+#   - Usa el PO token por SCRIPT (BGUTIL_SERVER_HOME): yt-dlp ejecuta
+#     `node build/generate_once.js` por request, sin necesidad de un
+#     proceso de larga duración. Es la vía compatible con serverless.
+#   - El `CMD` es solo `python server.py` (arranca rápido, escucha PORT).
+
+FROM python:3.11-slim
+
+# ─── Dependencias del sistema ─────────────────────────────
+# ffmpeg: conversión de audio
+# build-essential/pkg-config/libcairo*/libjpeg*/libgif*/librsvg*/libpango*:
+#   bgutil PO token provider declara "canvas" (compila deps nativas en
+#   npm ci) — sin ellas el instalar el provider falla.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    git \
+    gnupg \
+    build-essential \
+    pkg-config \
+    python3 \
+    libcairo2-dev \
+    libjpeg62-turbo-dev \
+    libgif-dev \
+    librsvg2-dev \
+    libpango1.0-dev \
+    libpixman-1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ─── Node.js (bgutil provider exige node >=22) ────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ─── Backend Python ───────────────────────────────────────
+COPY server/server.py .
+COPY server/download_engine.py .
+COPY server/models/ ./models/
+COPY server/utils/ ./utils/
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir yt-dlp==2026.6.9 && \
+    pip install --no-cache-dir bgutil-ytdlp-pot-provider==1.3.2
+
+RUN mkdir -p /data/cookies /data/logs
+
+# ─── bgutil PO token provider (solo el build para el modo script) ──
+# Clonamos y compilamos para que exista build/generate_once.js.
+# NO lo arrancamos como server: se usa por script por cada request.
+RUN git clone --single-branch --depth 1 --branch 1.3.2 \
+    https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
+    /opt/bgutil-provider && \
+    cd /opt/bgutil-provider/server && \
+    npm ci && \
+    npx tsc
+
+ENV PORT=8899
+ENV HOST=0.0.0.0
+ENV COOKIES_FILE=/data/cookies/cookies.txt
+ENV LOG_DIR=/data/logs
+ENV LOG_LEVEL=INFO
+# Vía de PO token por script: sin server persistente (clave en serverless)
+ENV BGUTIL_SERVER_HOME=/opt/bgutil-provider/server
+
+EXPOSE 8899
+
+CMD ["python", "server.py"]
