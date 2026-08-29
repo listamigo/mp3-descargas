@@ -251,6 +251,24 @@ _FREE_PROXY_CACHE_TTL = 300  # 5 min
 _free_proxy_cache = {"proxies": [], "ts": 0.0}
 _free_proxy_lock = threading.Lock()
 
+# Memoria de proxies que ALGUNA VEZ funcionaron para descargar. La lista
+# gratuita rota y muchos estan muertos; probarlos en orden aleatorio gasta
+# decenas de segundos en proxies que nunca responden. Al recordar los que
+# dieron resultado los probamos PRIMERO en la siguiente peticion, lo que
+# acelera mucho el fallback por proxy en IPs de datacenter.
+_working_proxy_cache: list[str] = []
+_working_proxy_lock = threading.Lock()
+_WORKING_PROXY_MAX = 8
+
+
+def _remember_working_proxy(proxy: str) -> None:
+    """Marca un proxy como que funciono (lo delicamos para reusarlo)."""
+    with _working_proxy_lock:
+        if proxy in _working_proxy_cache:
+            _working_proxy_cache.remove(proxy)
+        _working_proxy_cache.insert(0, proxy)
+        del _working_proxy_cache[_WORKING_PROXY_MAX:]
+
 
 def _fetch_free_proxies() -> list[str]:
     """Obtiene proxies SOCKS5 gratuitos de múltiples fuentes.
@@ -383,14 +401,28 @@ def _find_working_proxy(video_id: str) -> str | None:
     """Encuentra un proxy que pueda resolver el video (validación rápida).
 
     Prueba varios proxies con `--get-url`; devuelve el primero que
-    responda. La descarga posterior (`_proxy_cmd`) usará ese MISMO proxy
-    para que la firma de la URL coincida con la IP de descarga.
+    responda. Se prueban PRIMERO los proxies que funcionaron en el pasado
+    (los gratuitos rotan y la lista está llena de muertos, así que esto
+    evita gastar decenas de segundos en proxies que nunca responden).
+    La descarga posterior (`_proxy_cmd`) usará ese MISMO proxy para que la
+    firma de la URL coincida con la IP de descarga.
     """
-    proxies = _fetch_free_proxies()
-    if not proxies:
-        return None
+    fresh = _fetch_free_proxies()
+    with _working_proxy_lock:
+        known = list(_working_proxy_cache)
+    # Probar primeros los ya conocidos, luego el resto de la lista fresca.
+    candidates: list[str] = []
+    for p in known:
+        if p not in candidates:
+            candidates.append(p)
+    for p in fresh:
+        if p not in candidates:
+            candidates.append(p)
+
     url = f"https://youtube.com/watch?v={video_id}"
-    for proxy in proxies[:8]:
+    # Timeout corto por proxy (10s): si un proxy no responde rapido, es que
+    # esta muerto, y probar muchos con 15s cada uno agota el request.
+    for proxy in candidates[:8]:
         try:
             cmd = [
                 "yt-dlp", "--no-warnings",
@@ -400,9 +432,10 @@ def _find_working_proxy(video_id: str) -> str | None:
                 "-f", "bestaudio/best",
                 "--get-url", url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0 and result.stdout.strip():
                 logger.info(f"Proxy activo para {video_id}: {proxy}")
+                _remember_working_proxy(proxy)
                 return proxy
         except Exception:
             continue

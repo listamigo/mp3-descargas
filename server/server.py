@@ -33,6 +33,7 @@ from download_engine import (
     _base_cmd,
     _proxy_cmd,
     _find_working_proxy,
+    _remember_working_proxy,
     ordered_clients,
     get_client_health,
     record_success,
@@ -558,14 +559,27 @@ class APIHandler(BaseHTTPRequestHandler):
         # la URL de googlevideo para la IP que la solicitó, así que obtener
         # la URL con --get-url y descargarla directo desde la IP del server
         # siempre falla (403 → "Proxy download failed").
+        #
+        # Hacemos VARIOS intentos de proxy: un proxy puede resolver el video
+        # (--get-url) pero fallar en la descarga real de bytes, o morir a
+        # mitad. Cada intento busca un proxy distinto y descarga; salimos en
+        # cuanto uno produce audio. Esto hace el fallback mucho mas tolerable
+        # dado que la IP de Render esta bloqueada y el proxy es la unica via.
         logger.info(f"yt-dlp falló para {video_id}, intentando proxy SOCKS5...")
-        proxy = _find_working_proxy(video_id)
-        if proxy:
-            self._stream_proxy_download(video_id, proxy)
-            return
+        for _attempt in range(3):
+            proxy = _find_working_proxy(video_id)
+            if not proxy:
+                logger.warning(f"Proxy falló para {video_id} (no se encontró proxy), "
+                               f"intentando Invidious fallback...")
+                self._proxy_download_invidious(video_id, title)
+                return
+            ok = self._stream_proxy_download(video_id, proxy)
+            if ok:
+                return
 
-        # Fallback 2: intentar Invidious
-        logger.info(f"Proxy falló para {video_id}, intentando Invidious fallback...")
+        # Agotados los intentos de proxy sin producir audio → Invidious
+        logger.warning(f"Proxy falló para {video_id} (3 intentos sin audio), "
+                       f"intentando Invidious fallback...")
         self._proxy_download_invidious(video_id, title)
 
     def _stream_proxy_download(self, video_id: str, proxy: str) -> None:
@@ -596,6 +610,24 @@ class APIHandler(BaseHTTPRequestHandler):
             p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
             p1.stdout.close()
 
+            # Esperar el primer byte con timeout: si el proxy/yt-dlp nunca
+            # produce audio, abortamos en vez de bloquear el request hasta
+            # el timeout global. Un proxy que resuelve --get-url puede aun
+            # colgarse al descargar, y bloquear aqui gastaria decenas de
+            # segundos por intento.
+            try:
+                import select as _select
+                _ready, _, _ = _select.select([p2.stdout], [], [], 35)
+                if not _ready:
+                    logger.warning(f"Proxy download timeout (sin audio en 35s) para {video_id}")
+                    try: p1.terminate()
+                    except Exception: pass
+                    try: p2.terminate()
+                    except Exception: pass
+                    return False
+            except Exception:
+                pass
+
             first = p2.stdout.read(8192)
             if not first:
                 stderr = b""
@@ -606,11 +638,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 except Exception: pass
                 try: p2.terminate()
                 except Exception: pass
-                try:
-                    self._json(502, {"error": "Proxy download failed"})
-                except Exception:
-                    pass
-                return
+                # NO escribimos 502 aqui: si el fallo es temprano (no hubo
+                # audio), devolvemos False para que el llamador reintente con
+                # otro proxy. Solo al agotar los intentos se reporta error.
+                return False
 
             self.protocol_version = "HTTP/1.1"
             self.send_response(200)
@@ -650,9 +681,10 @@ class APIHandler(BaseHTTPRequestHandler):
 
                 os.replace(tmp_path, download_path)
                 self._cleanup_download_cache()
+                _remember_working_proxy(proxy)
                 logger.info(f"Proxy download completado: {video_id} "
                             f"(via {proxy}, {total_bytes} bytes)")
-                return
+                return True
 
             except BrokenPipeError:
                 logger.debug(f"Cliente desconectado durante proxy download de {video_id}")
@@ -670,10 +702,9 @@ class APIHandler(BaseHTTPRequestHandler):
                     os.remove(download_path + ".tmp")
             except Exception:
                 pass
-            try:
-                self._json(502, {"error": f"Proxy download failed: {e}"})
-            except Exception:
-                pass
+            # Devuelve False para que el llamador reintente con otro proxy.
+            # Solo al agotar los intentos el flujo reportara error.
+            return False
         finally:
             try: p1.terminate()
             except Exception: pass
@@ -683,6 +714,7 @@ class APIHandler(BaseHTTPRequestHandler):
             except Exception: pass
             try: p2.stdout.close()
             except Exception: pass
+        return False
 
     # ─── Invidious fallback para download ────────────────────
     def _proxy_download_invidious(self, video_id: str, title: str) -> None:
