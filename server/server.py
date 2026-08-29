@@ -276,10 +276,22 @@ class APIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/health":
+                # Verificar PO token provider
+                po_provider_ok = False
+                po_provider_url = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
+                if po_provider_url:
+                    try:
+                        import urllib.request as _urllib
+                        _urllib.urlopen(po_provider_url, timeout=3)
+                        po_provider_ok = True
+                    except Exception:
+                        pass
                 self._json(200, {
                     "status": "ok",
                     "has_cookies": os.path.isfile(COOKIES_FILE),
                     "has_proxy": bool(RESIDENTIAL_PROXY),
+                    "has_po_provider": po_provider_ok,
+                    "po_provider_url": po_provider_url or None,
                     "yt_dlp_version": _get_ytdlp_version(),
                     "uptime": _get_uptime(),
                     "client_health": get_client_health(),

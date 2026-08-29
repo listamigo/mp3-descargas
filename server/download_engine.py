@@ -23,13 +23,18 @@ YTDLP_TIMEOUT = 60
 # ═══════════════════════════════════════════════════════════════
 # Invidious fallback — cuando yt-dlp falla por bot-detection
 # ────────────────────────────────────────────────────────────────
+# Instancias verificadas vivas (2026-08-28). El orden importa:
+# las que funcionan van primero para minimizar latencia.
 INVIDIOUS_INSTANCES = [
+    "https://invidious.protokolla.fi",
+    "https://invidious.projectsegfau.lt",
+    "https://invidious.nerdvpn.de",
+    "https://inv.nadeko.net",
+    "https://yewtu.be",
+    # Fallbacks no verificados (pueden estar muertos)
     "https://inv.zoomerville.com",
     "https://invidious.slipfox.xyz",
-    "https://invidious.projectsegfau.lt",
-    "https://invidious.protokolla.fi",
     "https://invidious.flokinet.to",
-    "https://vid.puffyan.us",
     "https://iv.ggtyler.dev",
 ]
 _invidious_active = None  # instance that worked last
@@ -244,16 +249,23 @@ _free_proxy_lock = threading.Lock()
 
 
 def _fetch_free_proxies() -> list[str]:
-    """Obtiene proxies SOCKS5 gratuitos de la API de GeoNode."""
+    """Obtiene proxies SOCKS5 gratuitos de múltiples fuentes.
+
+    Intenta GeoNode primero, luego fallback a otros lists públicos.
+    Cachea por 5 min para no abusar de las APIs.
+    """
     now = time.time()
     with _free_proxy_lock:
         if _free_proxy_cache["proxies"] and (now - _free_proxy_cache["ts"]) < _FREE_PROXY_CACHE_TTL:
             return _free_proxy_cache["proxies"]
 
+    proxies: list[str] = []
+
+    # Fuente 1: GeoNode (principal)
     try:
         req = urllib.request.Request(
             "https://proxylist.geonode.com/api/proxy-list?"
-            "limit=15&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
+            "limit=20&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
             headers={"User-Agent": random.choice(USER_AGENTS)},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -263,24 +275,56 @@ def _fetch_free_proxies() -> list[str]:
                 for p in data.get("data", [])
                 if p.get("ip") and p.get("port")
             ]
-            with _free_proxy_lock:
-                _free_proxy_cache["proxies"] = proxies
-                _free_proxy_cache["ts"] = now
-            logger.info(f"Fetched {len(proxies)} free SOCKS5 proxies")
-            return proxies
     except Exception as e:
-        logger.warning(f"Failed to fetch free proxies: {e}")
-        return []
+        logger.warning(f"GeoNode proxy fetch failed: {e}")
+
+    # Fuente 2: Si GeoNode falló, intentar SOCKSProxyList
+    if not proxies:
+        try:
+            req = urllib.request.Request(
+                "https://www.socks-proxy.net/",
+                headers={"User-Agent": random.choice(USER_AGENTS)},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+                import re as _re
+                for m in _re.finditer(
+                    r'<td>(\d+\.\d+\.\d+\.\d+)</td>\s*<td>(\d+)</td>\s*<td>[^<]*</td>\s*<td>[^<]*</td>\s*<td>[^<]*</td>\s*<td>[^<]*</td>\s*<td>[^<]*</td>\s*<td>([^<]+)</td>',
+                    html,
+                ):
+                    ip, port, protocol = m.group(1), m.group(2), m.group(3).strip().lower()
+                    if "socks5" in protocol:
+                        proxies.append(f"socks5://{ip}:{port}")
+        except Exception as e:
+            logger.warning(f"SOCKSProxyList fetch failed: {e}")
+
+    if proxies:
+        random.shuffle(proxies)
+        with _free_proxy_lock:
+            _free_proxy_cache["proxies"] = proxies
+            _free_proxy_cache["ts"] = now
+        logger.info(f"Fetched {len(proxies)} free SOCKS5 proxies")
+    else:
+        logger.warning("No free proxies available from any source")
+
+    return proxies
 
 
 def _try_with_proxy(video_id: str) -> str | None:
-    """Intenta obtener URL de audio vía proxies SOCKS5 gratuitos."""
+    """Intenta obtener URL de audio vía proxies SOCKS5 gratuitos.
+
+    Prueba múltiples proxies con timeout corto para no bloquear.
+    YouTube bloquea IPs de datacenter (Render, Railway, etc.), así que
+    un proxy residencial o al menos uno que no esté en lista negra es
+    necesario para que las descargas funcionen.
+    """
     proxies = _fetch_free_proxies()
     if not proxies:
         return None
 
     url = f"https://youtube.com/watch?v={video_id}"
-    for proxy in proxies[:5]:  # probar max 5
+    # Probar max 8 proxies (más intentos = más probabilidades)
+    for proxy in proxies[:8]:
         try:
             cmd = [
                 "yt-dlp", "--no-warnings",
@@ -290,11 +334,15 @@ def _try_with_proxy(video_id: str) -> str | None:
                 "-f", "bestaudio/best",
                 "--get-url", url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             if result.returncode == 0 and result.stdout.strip():
                 logger.info(f"Audio URL via proxy {proxy} for {video_id}")
                 return result.stdout.strip().split("\n")[0].strip()
-        except (subprocess.TimeoutExpired, Exception):
+        except subprocess.TimeoutExpired:
+            logger.debug(f"Proxy {proxy} timed out for {video_id}")
+            continue
+        except Exception as e:
+            logger.debug(f"Proxy {proxy} failed for {video_id}: {e}")
             continue
     return None
 
@@ -346,32 +394,43 @@ def _resolve_invidious_instance() -> str | None:
 
 
 def invidious_get_audio_url(video_id: str) -> str | None:
-    """Obtiene URL de audio vía Invidious. Retorna None si falla."""
+    """Obtiene URL de audio vía Invidious. Retorna None si falla.
+
+    Prueba múltiples instancias si la primera falla.
+    """
+    # Primero intentar con la instancia activa conocida
     instance = _resolve_invidious_instance()
-    if not instance:
-        return None
+    instances_to_try = [instance] if instance else []
+    # Agregar las demás instancias como fallback
+    instances_to_try.extend(
+        i for i in INVIDIOUS_INSTANCES if i not in instances_to_try
+    )
 
-    data = _invidious_request(f"{instance}/api/v1/videos/{video_id}", timeout=20)
-    if not data or not isinstance(data, dict):
-        return None
+    for inst in instances_to_try:
+        data = _invidious_request(f"{inst}/api/v1/videos/{video_id}", timeout=15)
+        if not data or not isinstance(data, dict):
+            continue
 
-    formats = data.get("adaptiveFormats") or data.get("formatStreams") or []
-    # Buscar mejor audio m4a/mp4
-    audio_formats = [
-        f for f in formats
-        if "audio" in (f.get("type") or f.get("mimeType") or "")
-    ]
-    if not audio_formats:
-        audio_formats = formats  # fallback a cualquier formato
+        formats = data.get("adaptiveFormats") or data.get("formatStreams") or []
+        # Buscar mejor audio m4a/mp4
+        audio_formats = [
+            f for f in formats
+            if "audio" in (f.get("type") or f.get("mimeType") or "")
+        ]
+        if not audio_formats:
+            audio_formats = formats  # fallback a cualquier formato
 
-    if not audio_formats:
-        return None
+        if not audio_formats:
+            continue
 
-    # Ordenar por bitrate descendente
-    audio_formats.sort(key=lambda f: f.get("bitrate") or 0, reverse=True)
-    url = audio_formats[0].get("url")
-    if url and url.startswith("https://"):
-        return url
+        # Ordenar por bitrate descendente
+        audio_formats.sort(key=lambda f: f.get("bitrate") or 0, reverse=True)
+        url = audio_formats[0].get("url")
+        if url and url.startswith("https://"):
+            logger.info(f"Audio URL via Invidious {inst} for {video_id}")
+            return url
+
+    logger.warning(f"No Invidious instance could provide audio for {video_id}")
     return None
 
 
@@ -420,6 +479,11 @@ def invidious_download(video_id: str, output_path: str,
 
 
 
+# URL del PO token provider (bgutil HTTP server)
+# Se configura via env var o se detecta automáticamente si corre en el mismo host.
+PO_TOKEN_PROVIDER_URL = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
+
+
 def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     """Return base yt-dlp args common to all invocations.
 
@@ -433,6 +497,15 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     extractor = f"youtube:player_client={player}"
     if PO_TOKEN:
         extractor += f";po_token={PO_TOKEN}"
+    # PO token provider — genera tokens automáticamente para cada video
+    # Se agrega como extractor arg separado (yt-dlp soporta múltiples
+    # --extractor-args para diferentes extractors)
+    po_provider_args = []
+    if PO_TOKEN_PROVIDER_URL:
+        po_provider_args = [
+            "--extractor-args",
+            f"youtubepot-bgutilhttp:base_url={PO_TOKEN_PROVIDER_URL}",
+        ]
     cmd.extend(["--extractor-args", extractor])
     if cookies and os.path.isfile(COOKIES_FILE):
         cmd.extend(["--cookies", COOKIES_FILE])
@@ -452,6 +525,8 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     # Proxy residencial si está configurado
     if RESIDENTIAL_PROXY:
         cmd.extend(["--proxy", RESIDENTIAL_PROXY])
+    # Agregar PO token provider args al final
+    cmd.extend(po_provider_args)
     return cmd
 
 

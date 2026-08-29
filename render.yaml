@@ -17,6 +17,18 @@ services:
         value: /tmp/cookies/cookies.txt
       - key: YTDLP_VERSION
         value: 2026.6.9
+      # CRÍTICO: YouTube bloquea IPs de datacenter (Render, Railway, etc.)
+      # Sin proxy residencial, las descargas fallarán intermitentemente.
+      # Opciones:
+      #   1. Proxy residencial (mejor): RESIDENTIAL_PROXY=socks5://user:pass@host:port
+      #   2. PO token (gratis pero complejo): YT_PO_TOKEN=web+XXXX
+      #   3. Cookies válidas: COOKIES_B64=<base64-de-cookies.txt>
+      # - key: RESIDENTIAL_PROXY
+      #   value: ""
+      # - key: YT_PO_TOKEN
+      #   value: ""
+      # - key: COOKIES_B64
+      #   value: ""
     healthCheckPath: /api/health
     # Prevenir spin-down con health checks más frecuentes
     healthCheckPolicy:
