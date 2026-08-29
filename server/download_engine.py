@@ -321,7 +321,11 @@ def _fetch_free_proxies() -> list[str]:
             logger.warning(f"SOCKSProxyList fetch failed: {e}")
 
     if proxies:
-        random.shuffle(proxies)
+        # Respetamos el orden de la fuente (GeoNode ordena por lastChecked
+        # desc). Antes se hacía random.shuffle, lo que enterraba al mejor
+        # proxy en posiciones >8 y causaba que el server "no encontrara
+        # proxy" aunque la lista tuviera uno bueno. Sin shuffle, los mas
+        # recientes/mas rapidos se prueban primero.
         with _free_proxy_lock:
             _free_proxy_cache["proxies"] = proxies
             _free_proxy_cache["ts"] = now
@@ -423,9 +427,12 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
             candidates.append(p)
 
     url = f"https://youtube.com/watch?v={video_id}"
-    # Timeout corto por proxy (10s): si un proxy no responde rapido, es que
-    # esta muerto, y probar muchos con 15s cada uno agota el request.
-    for proxy in candidates[:8]:
+    # Timeout corto por proxy (6s): los muertos fallan en <2s ("connection
+    # refused") y los buenos responden en ~3s (validado: 193.25.215.182 dio
+    # get-url en ~3s). Probamos hasta 20 candidatos (antes 8) para que el
+    # buen proxy de la lista tenga mas chance de estar en el rango probado,
+    # sin que el costo en tiempo dispare (los muertos apenas consumen).
+    for proxy in candidates[:20]:
         try:
             cmd = [
                 "yt-dlp", "--no-warnings",
@@ -435,7 +442,7 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
                 "-f", "bestaudio/best",
                 "--get-url", url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
             if result.returncode == 0 and result.stdout.strip():
                 logger.info(f"Proxy activo para {video_id}: {proxy}")
                 # NOTA: NO marcamos el proxy como "working" aqui. Que resuelva
