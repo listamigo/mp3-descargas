@@ -498,14 +498,11 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     if PO_TOKEN:
         extractor += f";po_token={PO_TOKEN}"
     # PO token provider — genera tokens automáticamente para cada video
-    # Se agrega como extractor arg separado (yt-dlp soporta múltiples
-    # --extractor-args para diferentes extractors)
-    po_provider_args = []
+    # IMPORTANTE: usar un solo --extractor-args con ambos extractors
+    # separados por punto y coma. Si se pasan dos --extractor-args,
+    # yt-dlp sobreescribe el primero con el segundo.
     if PO_TOKEN_PROVIDER_URL:
-        po_provider_args = [
-            "--extractor-args",
-            f"youtubepot-bgutilhttp:base_url={PO_TOKEN_PROVIDER_URL}",
-        ]
+        extractor += f";youtubepot-bgutilhttp:base_url={PO_TOKEN_PROVIDER_URL}"
     cmd.extend(["--extractor-args", extractor])
     if cookies and os.path.isfile(COOKIES_FILE):
         cmd.extend(["--cookies", COOKIES_FILE])
@@ -525,8 +522,6 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     # Proxy residencial si está configurado
     if RESIDENTIAL_PROXY:
         cmd.extend(["--proxy", RESIDENTIAL_PROXY])
-    # Agregar PO token provider args al final
-    cmd.extend(po_provider_args)
     return cmd
 
 
