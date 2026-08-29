@@ -18,8 +18,7 @@ PO_PROVIDER_PORT="${PO_PROVIDER_PORT:-4416}"
 
 if [ -d "$PO_PROVIDER_DIR" ] && [ -f "$PO_PROVIDER_DIR/build/main.js" ]; then
     echo "🔧 Iniciando PO token provider en puerto $PO_PROVIDER_PORT..."
-    cd "$PO_PROVIDER_DIR"
-    node build/main.js --port "$PO_PROVIDER_PORT" &
+    (cd "$PO_PROVIDER_DIR" && node build/main.js --port "$PO_PROVIDER_PORT") &
     PO_PID=$!
     echo "   PO token provider PID: $PO_PID"
 
@@ -52,4 +51,5 @@ fi
 
 # ─── Arrancar servidor principal ──────────────────────────
 echo "🎵 Iniciando servidor HTTP en puerto ${PORT:-8899}..."
+cd /home/user/app
 exec python server.py
