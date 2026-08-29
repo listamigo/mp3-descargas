@@ -38,7 +38,7 @@ RUN git clone --single-branch --depth 1 \
     https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
     /opt/bgutil-provider && \
     cd /opt/bgutil-provider/server && \
-    npm ci --omit=dev && \
+    npm ci && \
     npx tsc && \
     chown -R user:user /opt/bgutil-provider
 
