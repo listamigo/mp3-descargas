@@ -436,7 +436,20 @@ class APIHandler(BaseHTTPRequestHandler):
         last_err = ""
         os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
 
+        # Límite de tiempo para el bucle de clients DIRECTOS. En IPs de
+        # datacenter (Render free) YouTube responde "Sign in to confirm
+        # you're not a bot" a TODOS los clients, y cada fallo tarda ~5s +
+        # backoff, por lo que recorrer los 7 puede agotar el timeout del
+        # request (~120s) ANTES de llegar al fallback de proxy. Forzamos un
+        # salto temprano al proxy para que la descarga complete a tiempo.
+        DIRECT_CLIENTS_DEADLINE = 25.0
+        _clients_start = time.monotonic()
+
         for client in ordered_clients():
+            if time.monotonic() - _clients_start > DIRECT_CLIENTS_DEADLINE:
+                logger.info(f"Deadline de clients directos alcanzado para {video_id}, "
+                            f"pasando a proxy...")
+                break
             yt_cmd = _base_cmd(client) + [
                 "-o", "-",
                 "-f", "bestaudio[ext=m4a]/bestaudio/best",

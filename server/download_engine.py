@@ -334,7 +334,7 @@ def _try_with_proxy(video_id: str) -> str | None:
                 "yt-dlp", "--no-warnings",
                 "--proxy", proxy,
                 "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", "youtube:player_client=tv_embedded",
+                "--extractor-args", "youtube:player_client=android",
                 "-f", "bestaudio/best",
                 "--get-url", url,
             ]
@@ -366,7 +366,7 @@ def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[st
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
-        "--extractor-args", "youtube:player_client=tv_embedded",
+        "--extractor-args", "youtube:player_client=android",
         "-f", "bestaudio/best",
         "--no-playlist", "--no-part",
     ]
@@ -396,7 +396,7 @@ def _find_working_proxy(video_id: str) -> str | None:
                 "yt-dlp", "--no-warnings",
                 "--proxy", proxy,
                 "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", "youtube:player_client=tv_embedded",
+                "--extractor-args", "youtube:player_client=android",
                 "-f", "bestaudio/best",
                 "--get-url", url,
             ]
