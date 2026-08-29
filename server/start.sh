@@ -19,6 +19,13 @@ echo "🚀 Iniciando MP3 Downloader Server..."
 PO_PROVIDER_DIR="/opt/bgutil-provider/server"
 PO_PROVIDER_PORT="${PO_PROVIDER_PORT:-4416}"
 
+# Via FIABLE de PO token: bgutilscript ejecuta node por request (sin server
+# persistente). Render free mata/recicla procesos background, por lo que esta
+# vía siempre disponible es la primaria. Tambien intentamos levantar el server
+# HTTP como alternativa (bgutilhttp).
+export BGUTIL_SERVER_HOME="$PO_PROVIDER_DIR"
+echo "ℹ️  BGUTIL_SERVER_HOME=$BGUTIL_SERVER_HOME (PO vía script, sin server)"
+
 if [ -d "$PO_PROVIDER_DIR" ] && [ -f "$PO_PROVIDER_DIR/build/main.js" ]; then
     echo "🔧 Arrancando PO token provider en puerto $PO_PROVIDER_PORT..."
 

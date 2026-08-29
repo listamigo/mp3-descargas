@@ -537,8 +537,15 @@ def invidious_download(video_id: str, output_path: str,
 
 
 
-# URL del PO token provider (bgutil HTTP server)
-# Se configura via env var o se detecta automáticamente si corre en el mismo host.
+# PO token provider (bgutil)
+# Dos vías:
+#   BGUTIL_SERVER_HOME: ruta al repo del provider (server). yt-dlp usa el
+#     plugin `bgutilscript` que ejecuta `node generate_once.js` POR REQUEST.
+#     No depende de un proceso HTTP persistente → es FIABLE en Render free,
+#     donde el server background se cae por el reinicio/recursos.
+#   PO_TOKEN_PROVIDER_URL: server HTTP (bgutilhttp). Solo si responde,
+#     porque requiere un proceso Node background que en Render suele morir.
+BGUTIL_SERVER_HOME = os.environ.get("BGUTIL_SERVER_HOME", "")
 PO_TOKEN_PROVIDER_URL = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
 
 
@@ -555,11 +562,16 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     extractor = f"youtube:player_client={player}"
     if PO_TOKEN:
         extractor += f";po_token={PO_TOKEN}"
-    # PO token provider — genera tokens automáticamente para cada video
-    # IMPORTANTE: usar un solo --extractor-args con ambos extractors
-    # separados por punto y coma. Si se pasan dos --extractor-args,
-    # yt-dlp sobreescribe el primero con el segundo.
+    # PO token provider — genera tokens automáticamente para cada video.
+    # IMPORTANTE: usar un solo --extractor-args con múltiples PROVIDERS
+    # separados por punto y coma. yt-dlp prueba cada provider en orden del
+    # registro (script-node tiene preferencia sobre http), así que AMBOS
+    # funcionan como fallback el uno del otro.
+    if BGUTIL_SERVER_HOME:
+        # Vía robusta: spinner propio del provider por request (sin server).
+        extractor += f";youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}"
     if PO_TOKEN_PROVIDER_URL:
+        # Vía server HTTP — solo da tokens si el server background responde.
         extractor += f";youtubepot-bgutilhttp:base_url={PO_TOKEN_PROVIDER_URL}"
     cmd.extend(["--extractor-args", extractor])
     if cookies and os.path.isfile(COOKIES_FILE):

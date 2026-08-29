@@ -278,7 +278,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/health":
-                # Verificar PO token provider
+                # Verificar PO token provider (vías HTTP y script)
                 po_provider_ok = False
                 po_provider_url = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
                 if po_provider_url:
@@ -291,12 +291,19 @@ class APIHandler(BaseHTTPRequestHandler):
                             break
                         except Exception:
                             continue
+                # Vía script: disponible si existe el repo del provider
+                po_script_ok = bool(
+                    os.environ.get("BGUTIL_SERVER_HOME")
+                    and os.path.isfile(os.path.join(
+                        os.environ["BGUTIL_SERVER_HOME"], "build", "generate_once.js"))
+                )
                 self._json(200, {
                     "status": "ok",
                     "has_cookies": os.path.isfile(COOKIES_FILE),
                     "has_proxy": bool(RESIDENTIAL_PROXY),
                     "has_po_provider": po_provider_ok,
                     "po_provider_url": po_provider_url or None,
+                    "po_script_ok": po_script_ok,
                     "yt_dlp_version": _get_ytdlp_version(),
                     "uptime": _get_uptime(),
                     "client_health": get_client_health(),
