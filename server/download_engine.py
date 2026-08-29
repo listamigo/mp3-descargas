@@ -91,14 +91,18 @@ COOKIES_FILE = os.environ.get(
 
 # Order matters: clients that bypass YouTube's bot/login challenge are
 # tried first so downloads keep working even when cookies are missing or
-# expired. `tv_embedded`/`tv` rarely trigger "prove you're not a bot".
+# expired. With valid cookies, `android` is the most reliable client to
+# avoid "Sign in to confirm you're not a bot" (it served pages without the
+# bot challenge in live tests). `tv_embedded`/`tv` rarely trigger it too,
+# so they follow. Order = speed (reduces how many clients fail before one
+# works, which on datacenter IPs saved ~100s per request).
 PLAYER_CLIENTS = [
+    "android",
     "tv_embedded",
     "tv",
+    "ios",
     "mweb",
     "web",
-    "android",
-    "ios",
     "android_vr,web",
 ]
 
