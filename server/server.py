@@ -280,12 +280,15 @@ class APIHandler(BaseHTTPRequestHandler):
                 po_provider_ok = False
                 po_provider_url = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
                 if po_provider_url:
-                    try:
-                        import urllib.request as _urllib
-                        _urllib.urlopen(po_provider_url, timeout=3)
-                        po_provider_ok = True
-                    except Exception:
-                        pass
+                    import urllib.request as _urllib
+                    # Intentar IPv4 primero, luego IPv6
+                    for test_url in [po_provider_url, po_provider_url.replace("127.0.0.1", "::1")]:
+                        try:
+                            _urllib.urlopen(test_url, timeout=3)
+                            po_provider_ok = True
+                            break
+                        except Exception:
+                            continue
                 self._json(200, {
                     "status": "ok",
                     "has_cookies": os.path.isfile(COOKIES_FILE),
