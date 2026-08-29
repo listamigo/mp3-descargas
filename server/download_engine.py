@@ -397,26 +397,29 @@ def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[st
     return cmd
 
 
-def _find_working_proxy(video_id: str) -> str | None:
+def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None:
     """Encuentra un proxy que pueda resolver el video (validación rápida).
 
     Prueba varios proxies con `--get-url`; devuelve el primero que
     responda. Se prueban PRIMERO los proxies que funcionaron en el pasado
     (los gratuitos rotan y la lista está llena de muertos, así que esto
     evita gastar decenas de segundos en proxies que nunca responden).
+    `blocked`: conjunto de proxies a omitir (los que ya fallaron la
+    descarga completa en esta petición), para no re-probarlos.
     La descarga posterior (`_proxy_cmd`) usará ese MISMO proxy para que la
     firma de la URL coincida con la IP de descarga.
     """
+    blocked = blocked or set()
     fresh = _fetch_free_proxies()
     with _working_proxy_lock:
         known = list(_working_proxy_cache)
     # Probar primeros los ya conocidos, luego el resto de la lista fresca.
     candidates: list[str] = []
     for p in known:
-        if p not in candidates:
+        if p not in candidates and p not in blocked:
             candidates.append(p)
     for p in fresh:
-        if p not in candidates:
+        if p not in candidates and p not in blocked:
             candidates.append(p)
 
     url = f"https://youtube.com/watch?v={video_id}"
@@ -435,7 +438,10 @@ def _find_working_proxy(video_id: str) -> str | None:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0 and result.stdout.strip():
                 logger.info(f"Proxy activo para {video_id}: {proxy}")
-                _remember_working_proxy(proxy)
+                # NOTA: NO marcamos el proxy como "working" aqui. Que resuelva
+                # el --get-url no garantiza que la descarga COMPLETA funcione
+                # (la firma de googlevideo puede fallar al descargar). Solo
+                # _stream_proxy_download lo marca al CONFIRMAR la descarga.
                 return proxy
         except Exception:
             continue

@@ -566,8 +566,11 @@ class APIHandler(BaseHTTPRequestHandler):
         # cuanto uno produce audio. Esto hace el fallback mucho mas tolerable
         # dado que la IP de Render esta bloqueada y el proxy es la unica via.
         logger.info(f"yt-dlp falló para {video_id}, intentando proxy SOCKS5...")
-        for _attempt in range(3):
-            proxy = _find_working_proxy(video_id)
+        # Lista negra por-request: proxies cuya descarga COMPLETA falló.
+        # Así el reintento no vuelve a probar el mismo proxy fallido.
+        _blocked_proxies: set = set()
+        for _attempt in range(4):
+            proxy = _find_working_proxy(video_id, blocked=_blocked_proxies)
             if not proxy:
                 logger.warning(f"Proxy falló para {video_id} (no se encontró proxy), "
                                f"intentando Invidious fallback...")
@@ -576,6 +579,9 @@ class APIHandler(BaseHTTPRequestHandler):
             ok = self._stream_proxy_download(video_id, proxy)
             if ok:
                 return
+            _blocked_proxies.add(proxy)
+            logger.info(f"Proxy {proxy} falló la descarga para {video_id}, "
+                        f"probando otro proxy...")
 
         # Agotados los intentos de proxy sin producir audio → Invidious
         logger.warning(f"Proxy falló para {video_id} (3 intentos sin audio), "
