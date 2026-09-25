@@ -1,13 +1,92 @@
 # Continuar — MP3 Downloader (Android KMP + desktop Python)
 
-Fecha de corte: 2026-09-25 (2ª tanda, 13:20–13:40)
-Rama: `main` · Último commit: `8ded826 fix(server): probar mas proxies y respetar orden de calidad`
+Fecha de corte: 2026-09-25 (3ª tanda, 17:45–18:20)
+Rama: `main` · Último commit: `4d0652d perf: acota los segundos que la cadena de descarga esperaba antes del primer byte`
 Repo: `/home/elimdavid/mp3 downloader/`
 
-> **Estado de la 2ª tanda:** todo el trabajo de código previsto está hecho y
-> verificado en verde (build + lint). Quedan 2 decisiones que necesitan al
-> usuario (emulador y tests) y 2 acciones de seguridad que no puede hacer un
-> agente. **Nada está commiteado todavía**: los cambios están en el working tree.
+> **Estado de la 3ª tanda:** las 2 tandas anteriores están commiteadas y
+> pusheadas a GitHub (`8ded826..4d0652d`). Se investigated y corrigió la
+> lentitud de las descargas. Build + lint en verde. Lo que queda es **medir en
+> Railway**, porque el caso problemático (IP de datacenter) no se puede
+> reproducir en local: aquí la vía directa sí funciona y nunca se pagan los
+> deadlines que se cambiaron.
+
+---
+
+## 0.1 LO NUEVO EN LA 3ª TANDA (léelo primero)
+
+Todo está commiteado y en GitHub. La lentitud NO era la descarga: era la
+**cadena de intentos** que se recorría antes de encontrar una vía que funcionara.
+
+### Diagnóstico: dónde se iban los segundos
+
+Medido en local (mismo vídeo `FGBhQbmPwH8`, 10.28 MB):
+
+| Culpable | Ubicación | Antes | Ahora |
+|---|---|---|---|
+| Deadline de clients directos | `server.py:473` | 25 s fijos | 8 s (0 s con breaker abierto) |
+| Breaker se abría tras N peticiones | `download_engine.py` | 3 | 1 |
+| Reintentos internos de yt-dlp | `_base_cmd` | `--extractor-retries 3` / `--retries 10` (nunca ajustados) | 1 / 3 |
+| Escaneo de proxies | `_find_working_proxy` | 20 candidatos × 6 s = **120 s por intento** | filtro TCP 1.5 s |
+| Proxy bueno solo en RAM | `_working_proxy_cache` | se perdía al reiniciar | en disco + `WORKING_PROXY` |
+| Guardia "sin audio" | `server.py` | 35 s | 12 s |
+| Intentos de proxy | `server.py` | 4 | 3 |
+| Sondeo de Invidious | `download_engine.py` | 9 × 5 s + 15 s/resolución | 3 × 3 s + 10 s |
+| **Incrustado de etiquetas (móvil)** | `RemoteServerEngine.kt` | hasta 5 URLs × 10 s, **antes de `COMPLETED`** | fuera del camino crítico |
+| **`URL.readBytes()` sin timeout** | `Mp3MetadataWriter.kt:58` | **infinito** (0 = sin timeout en Java) | 5 s por intento |
+
+Todos los valores del servidor son variables de entorno, para poder medirlos en
+Railway **sin desplegar**:
+`DIRECT_CLIENTS_DEADLINE`, `DIRECT_PATH_MIN_FAILURES`, `MAX_PROXY_ATTEMPTS`,
+`PROXY_FIRST_BYTE_TIMEOUT`, `FREE_PROXY_CANDIDATES`, `PROXY_PROBE_TIMEOUT`,
+`TCP_PROBE_TIMEOUT`, `YTDLP_EXTRACTOR_RETRIES`, `YTDLP_RETRIES`,
+`YTDLP_SOCKET_TIMEOUT`, `INVIDIOUS_PROBE_INSTANCES`, `INVIDIOUS_PROBE_TIMEOUT`,
+`INVIDIOUS_VIDEO_TIMEOUT`, `WORKING_PROXY`.
+
+### Hallazgo crítico: Railway mata la petición a los 5 min
+
+De la doc oficial de Railway (Edge Traffic):
+
+> "HTTP requests can run for up to 15 minutes if data keeps transferring, and
+> are otherwise closed after **5 minutes with no data transferred**."
+
+`/api/download` **no envía ni las cabeceras** hasta tener los primeros 8192
+bytes de audio (`server.py:503`). Antes de acotar, ese primer byte podía tardar
+25 s + hasta 480 s de escaneo de proxies → **Railway cortaba la petición sin
+llegar a responder**, que es exactamente el síntoma "segundo intento sin
+respuesta en 150 s" de §3.12. **Acotar no es solo velocidad: es que funcione.**
+
+### Railway Free: no suspende contenedores
+
+La doc de precios de Railway no menciona suspensión por inactividad (cobra RAM
+mientras está inactivo y para cuando se acaban los créditos). Por eso el warm-up
+`RemoteHealth` importa **más en Render** (que sí duerme a los 15 min) que en
+Railway. Aun así se replicó el hook en el camino de descarga, que antes solo se
+disparaba en la búsqueda.
+
+### ⚠ Sobre la medición local (leer antes de celebrar)
+
+La descarga en local pasó de 20.15 s a 3.81 s hasta el primer byte, pero **eso NO
+es atribuible al cambio**: la primera medición fue con yt-dlp y la caché del SO
+en frío, y además en local la vía directa **funciona**, así que el código nunca
+alcanza los deadlines que se cambiaron. La prueba válida es la de Railway.
+
+Verificado en verde tras los cambios: `compileKotlinDesktop`, `lintDebug` (0
+errores), `assembleDebug`, y una descarga real de 10.28 MB / 321 s / 256 kbps
+válida con `ffprobe`.
+
+### Cómo medir en Railway (lo siguiente)
+
+1. Desplegar y mirar el log de una descarga. Buscar estas líneas, que dan el
+   tiempo real de cada etapa:
+   - `Vía directa en cooldown` → ya se salta los 25 s (o 8 s)
+   - `Proxy activo para <id>` → cuánto tardó el escaneo
+   - `Download streaming completado` → con qué client
+2. Fijar el proxy bueno en cuanto aparezca uno que funcione:
+   `WORKING_PROXY=socks5://ip:port`. A partir de ahí el escaneo desaparece.
+3. Comparar contra la versión anterior (commit `77cc29a`).
+
+
 
 ---
 
