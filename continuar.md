@@ -13,6 +13,56 @@ Repo: `/home/elimdavid/mp3 downloader/`
 
 ---
 
+## 0.0 RESUELTO EN LA 4ª TANDA: EL SERVIDOR POR DEFECTO ERA RENDER (léelo primero)
+
+**El problema de descargas que duraba desde la 1ª tanda era que la app apuntaba a Render, y Render no puede descargar. Ya está arreglado y verificado en un móvil real.**
+
+Medido el 2026-09-25, mismo vídeo y mismo commit `5c039ea` en los dos despliegues, 3 intentos cada uno:
+
+| Host | Resultado | Primer byte | Total |
+|---|---|---|---|
+| **Railway** | **200, MP3 válido de 256 kbps** | 0,73-3,18 s | 2,9-22,7 s |
+| **Render** | **502 siempre** | 67-78 s | — |
+
+Prueba en frío, vídeo de 14,6 min nunca descargado antes (`34dhfQ8Z_SY`):
+Railway 200 en 3,4 s de primer byte y 22,7 s totales (28.073.619 bytes);
+Render 502 a los 70,8 s.
+
+**Por qué difieren:** Render tiene cookies pero su proveedor de PO token no llega
+a arrancar. Railway no tiene cookies pero genera los PO tokens en modo script, y
+eso es lo que permite a una IP de datacenter extraer el audio. No es una
+diferencia de ancho de banda, es de si el host consigue o no superar el
+desafío de YouTube.
+
+**Verificación de extremo a extremo** (Xiaomi 220333QAG, Android 16, APK
+recién instalado y sin URL guardada, o sea configuración de fábrica):
+
+- Búsqueda `Vladimir Drozdoff` → 1,9 s, va directa a `RemoteServerEngine`.
+- Descarga en frío de `Elegy` (3:29), nunca descargada antes: completada en menos
+  de 6 s, 6.659.062 bytes, 208,09 s, 256 kbps, 44,1 kHz estéreo.
+- Fichero presente en `/sdcard/Download/` y la app lo marca `Completado · 6,4 MB`.
+
+Commits de esta tanda:
+
+- `5c039ea` — `build_commit` en `/api/health`.
+- `6a75bb1` — servidor por defecto pasa de Render a Railway.
+
+**Aviso importante sobre `uptime`:** el campo `uptime` de `/api/health` miente.
+Lee `/proc/uptime`, que es el uptime del **host**, no el del proceso, así que no
+cambia con un redeploy. Por eso Render reportaba `161d` y Railway `200d` con
+despliegues recientes, y no había forma de saber qué código corría en cada uno.
+Para eso está ahora `build_commit`, que lee el SHA que Railway y Render inyectan
+en el entorno. Antes de sacar conclusiones de rendimiento, comprobar siempre ese
+campo.
+
+**Lo que queda pendiente:** nada para que la app funcione. Opcional: dejar Render
+como servidor de respaldo automático. Hoy solo hay un hueco de URL
+(`RemoteConfig.serverUrl`), y un valor escrito en Ajustes sustituye al de
+fábrica, así que Render se puede seguir usando a mano sin tocar código, pero no
+hay conmutación automática entre los dos.
+
+---
+
 ## 0.1 LO NUEVO EN LA 3ª TANDA (léelo primero)
 
 Todo está commiteado y en GitHub. La lentitud NO era la descarga: era la
