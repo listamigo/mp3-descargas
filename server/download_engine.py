@@ -806,6 +806,56 @@ def invidious_download(video_id: str, output_path: str,
 BGUTIL_SERVER_HOME = os.environ.get("BGUTIL_SERVER_HOME", "")
 PO_TOKEN_PROVIDER_URL = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
 
+# Si el provider HTTP no responde, NO se añade su `--extractor-args`.
+#
+# Estar configurado no es lo mismo que estar vivo. En Render la variable
+# `PO_TOKEN_PROVIDER_URL` apuntaba a `http://127.0.0.1:4416` sin que hubiera
+# ningún proceso escuchando, y eso rompía TODAS las descargas: 502 tras 67-78 s.
+# El mismo commit en Railway, donde la variable NO está puesta, descarga bien.
+# O sea, la vía HTTP caída era la causa, no un detalle menor.
+#
+# Antes se añadía el argumento siempre que la variable existiera, asumiendo que
+# yt-dlp caería al provider de script cuando el HTTP fallara. No lo hace: con la
+# entrada muerta presente, la extracción falla.
+_po_http_alive = False
+_po_http_checked = False
+
+
+def po_http_provider_alive(force: bool = False) -> bool:
+    """¿Responde el provider HTTP de PO tokens? Resultado cacheado.
+
+    El sondeo se hace una sola vez porque el provider, si existe, es un proceso
+    persistente: si no estaba al arrancar, no aparece solo. `force=True` lo
+    vuelve a comprobar, para `/api/health`.
+    """
+    global _po_http_alive, _po_http_checked
+    if not PO_TOKEN_PROVIDER_URL:
+        return False
+    if _po_http_checked and not force:
+        return _po_http_alive
+
+    import urllib.request as _urllib
+    # Probar IPv4 y luego IPv6: en Render el provider escucha en una u otra
+    # segun como se levante, y `::1` es el fallo clasico de Node.
+    for test_url in (PO_TOKEN_PROVIDER_URL,
+                     PO_TOKEN_PROVIDER_URL.replace("127.0.0.1", "::1")):
+        try:
+            with _urllib.urlopen(test_url, timeout=3):
+                _po_http_alive = True
+                break
+        except Exception:
+            continue
+    else:
+        _po_http_alive = False
+
+    _po_http_checked = True
+    if not _po_http_alive:
+        logger.warning(
+            f"PO_TOKEN_PROVIDER_URL={PO_TOKEN_PROVIDER_URL} no responde; "
+            f"se omite youtubepot-bgutilhttp y se usa solo el provider script"
+        )
+    return _po_http_alive
+
 
 def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     """Return base yt-dlp args common to all invocations.
@@ -837,8 +887,10 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     if BGUTIL_SERVER_HOME:
         # Vía robusta: spinner propio del provider por request (sin server).
         extractor += f";youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}"
-    if PO_TOKEN_PROVIDER_URL:
-        # Vía server HTTP — solo da tokens si el server background responde.
+    if po_http_provider_alive():
+        # Vía server HTTP — solo si de verdad responde. Si esta puesta pero
+        # muerta, incluirla hace fallar la extracción entera, asi que se
+        # comprueba antes en vez de fiarse de que la variable exista.
         extractor += f";youtubepot-bgutilhttp:base_url={PO_TOKEN_PROVIDER_URL}"
     cmd.extend(["--extractor-args", extractor])
     if cookies and os.path.isfile(COOKIES_FILE):

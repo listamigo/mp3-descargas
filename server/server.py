@@ -37,6 +37,7 @@ from download_engine import (
     ordered_clients,
     get_client_health,
     record_success,
+    po_http_provider_alive,
     record_failure,
     direct_path_available,
     direct_path_state,
@@ -299,20 +300,12 @@ class APIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/health":
-                # Verificar PO token provider (vías HTTP y script)
-                po_provider_ok = False
+                # Verificar PO token provider (vias HTTP y script)
+                # El sondeo lo hace download_engine y lo cachea; force=True
+                # porque aqui se quiere el estado actual, no el cacheado.
+                po_provider_ok = po_http_provider_alive(force=True)
                 po_provider_url = os.environ.get("PO_TOKEN_PROVIDER_URL", "")
-                if po_provider_url:
-                    import urllib.request as _urllib
-                    # Intentar IPv4 primero, luego IPv6
-                    for test_url in [po_provider_url, po_provider_url.replace("127.0.0.1", "::1")]:
-                        try:
-                            _urllib.urlopen(test_url, timeout=3)
-                            po_provider_ok = True
-                            break
-                        except Exception:
-                            continue
-                # Vía script: disponible si existe el repo del provider
+                # Via script: disponible si existe el repo del provider
                 po_script_ok = bool(
                     os.environ.get("BGUTIL_SERVER_HOME")
                     and os.path.isfile(os.path.join(
