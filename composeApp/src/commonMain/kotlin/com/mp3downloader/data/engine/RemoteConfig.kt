@@ -11,13 +11,20 @@ object RemoteConfig {
      * Shipped as the default so the app works out of the box. A fresh install
      * has no stored config, and a reinstall wipes it, so without this the app
      * would ship with no working engine until the user typed a URL by hand.
-     * Verified 2026-09-25: /api/search returns 20 results in ~5 s and
-     * /api/download returns valid 256 kbps MP3.
      *
-     * A value typed in Settings still takes precedence, so anyone can point
-     * the app at their own host or a backup.
+     * Railway, not Render. Measured 2026-09-25 on the same video, 3 attempts
+     * each, both running the same commit:
+     *   Railway: 200 in 0.73-3.18 s to first byte, valid 256 kbps MP3.
+     *   Render:  502 every time, after 67-78 s, always ending in
+     *            "Invidious fallback: no audio URL available".
+     * Render has cookies but its PO token provider never comes up; Railway has
+     * no cookies but generates PO tokens in script mode, and that is what lets
+     * a datacenter IP extract the audio.
+     *
+     * A value typed in Settings still takes precedence, so Render (or any
+     * other host) can be used instead without touching the code.
      */
-    const val DEFAULT_SERVER_URL = "https://mp3-descargas-1.onrender.com"
+    const val DEFAULT_SERVER_URL = "https://mp3downloader-server-production.up.railway.app"
 
     private val json = Json { ignoreUnknownKeys = true }
 
