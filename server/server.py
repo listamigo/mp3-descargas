@@ -38,6 +38,10 @@ from download_engine import (
     get_client_health,
     record_success,
     record_failure,
+    direct_path_available,
+    direct_path_state,
+    record_direct_failure,
+    record_direct_success,
     invidious_get_audio_url,
 )
 
@@ -50,10 +54,11 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "/opt/mp3downloader/cookies/cookies.txt")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 LOG_DIR = os.environ.get("LOG_DIR", "/opt/mp3downloader/logs")
-# Versión de yt-dlp fijada para deploys deterministas. Cambiar YTDLP_VERSION
-# (y el pin del Dockerfile) en conjunto cuando se quiera actualizar. Esto
-# evita que un redeploy traiga una yt-dlp que rompa el bypass cookie-less.
-YTDLP_VERSION = os.environ.get("YTDLP_VERSION", "2026.6.9")
+# Versión mínima de yt-dlp para deploys deterministas. Debe subirse junto con
+# el pin del Dockerfile. 2026.6.9 fallaba al descargar con HTTP 403; 2026.8.19
+# es la última de PyPI y está verificada funcionando. NO se baja de versión:
+# si el entorno ya trae una yt-dlp más nueva, se respeta (ver ensure_ytdlp_updated).
+YTDLP_VERSION = os.environ.get("YTDLP_VERSION", "2026.8.19")
 LOG_FILE = os.environ.get("LOG_FILE", os.path.join(LOG_DIR, "server.log"))
 # Proxy residencial para evitar IPs de datacenter (Railway, etc.)
 RESIDENTIAL_PROXY = os.environ.get("RESIDENTIAL_PROXY", "")
@@ -80,17 +85,32 @@ logger = logging.getLogger("mp3downloader")
 # Auto-actualización de yt-dlp
 # ═══════════════════════════════════════════════════════════════
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Convierte '2026.8.19' en (2026, 8, 19) para poder comparar versiones.
+
+    Acepta la forma con ceros ('2026.08.19') que imprime `yt-dlp --version`.
+    Devuelve (0,) si la versión no es comparable, para forzar la instalación
+    del pin en vez de dejar una versión desconocida en producción.
+    """
+    try:
+        return tuple(int(part) for part in str(version).split("."))
+    except (AttributeError, ValueError):
+        return (0,)
+
+
 def ensure_ytdlp_updated() -> None:
-    """Asegura la versión fijada de yt-dlp (deploys deterministas).
+    """Asegura que yt-dlp sea al menos tan nueva como YTDLP_VERSION.
 
     A diferencia de un `--upgrade` ciego, respeta YTDLP_VERSION para que los
     redeploys no traigan una yt-dlp que rompa el bypass cookie-less ("inicia
-    sesión"). Solo reinstala si la versión actual difiere de la fijada.
+    sesión"). Solo reinstala si la versión actual es ANTERIOR a la fijada: una
+    versión más nueva que la fijada se respeta y nunca se degrada, porque
+    degradar fue justo lo que dejó el servidor devolviendo HTTP 403.
     """
     marker = os.path.join(LOG_DIR, ".ytdlp_updated")
     current = _get_ytdlp_version()
-    if current == YTDLP_VERSION:
-        logger.debug(f"yt-dlp ya en versión fijada {YTDLP_VERSION}")
+    if _version_tuple(current) >= _version_tuple(YTDLP_VERSION):
+        logger.debug(f"yt-dlp {current} >= fijada {YTDLP_VERSION}; no se toca")
         return
 
     should_install = True
@@ -103,7 +123,7 @@ def ensure_ytdlp_updated() -> None:
 
     if should_install:
         try:
-            logger.info(f"Instalando yt-dlp=={YTDLP_VERSION} (actual: {current})...")
+            logger.info(f"Actualizando yt-dlp {current} -> {YTDLP_VERSION}...")
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--quiet", f"yt-dlp=={YTDLP_VERSION}"],
                 capture_output=True, text=True, timeout=120
@@ -308,6 +328,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     "yt_dlp_version": _get_ytdlp_version(),
                     "uptime": _get_uptime(),
                     "client_health": get_client_health(),
+                    "direct_path": direct_path_state(),
                 })
                 return
 
@@ -444,6 +465,15 @@ class APIHandler(BaseHTTPRequestHandler):
         # request (~120s) ANTES de llegar al fallback de proxy. Forzamos un
         # salto temprano al proxy para que la descarga complete a tiempo.
         DIRECT_CLIENTS_DEADLINE = 25.0
+        if not direct_path_available():
+            # Ya sabemos que esta IP recibe el reto de bot en todos los
+            # clients. Saltar los 25s de intentos fallidos y yendo directo al
+            # proxy, que es la única vía que funciona desde datacenter.
+            DIRECT_CLIENTS_DEADLINE = 0.0
+            logger.info(
+                f"Vía directa en cooldown ({video_id}): yendo directo al proxy "
+                f"para no gastar {25:.0f}s en clients bloqueados"
+            )
         _clients_start = time.monotonic()
 
         for client in ordered_clients():
@@ -523,6 +553,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._cleanup_download_cache()
 
                     record_success(client)
+                    record_direct_success()
                     logger.info(f"Download streaming completado: {video_id} "
                                 f"(client={client}, {total_bytes} bytes)")
                     return
@@ -555,6 +586,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 except Exception: pass
 
         # Todos los clients fallaron → intentar proxy SOCKS5
+        record_direct_failure()
         # NOTA: la descarga COMPLETA debe pasar por el proxy. YouTube firma
         # la URL de googlevideo para la IP que la solicitó, así que obtener
         # la URL con --get-url y descargarla directo desde la IP del server
@@ -1015,6 +1047,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._cleanup_preview_cache()
 
                     record_success(client)
+                    record_direct_success()
                     logger.info(f"Preview streaming completado: {video_id} "
                                 f"(client={client}, {total_bytes} bytes)")
                     return
@@ -1063,6 +1096,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
 
         # Todos los clients fallaron → intentar proxy SOCKS5
+        record_direct_failure()
         # (descarga COMPLETA vía proxy para que la firma de la URL coincida)
         logger.info(f"yt-dlp preview falló para {video_id}, intentando proxy SOCKS5...")
         proxy = _find_working_proxy(video_id)

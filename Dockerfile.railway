@@ -45,7 +45,7 @@ COPY server/models/ ./models/
 COPY server/utils/ ./utils/
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir yt-dlp==2026.6.9 && \
+    pip install --no-cache-dir yt-dlp==2026.8.19 && \
     pip install --no-cache-dir bgutil-ytdlp-pot-provider==1.3.2
 
 RUN mkdir -p /data/cookies /data/logs

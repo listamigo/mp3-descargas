@@ -212,6 +212,60 @@ _HARD_BAN_HINTS = (
     "content warning",
 )
 
+
+# ────────────────────────────────────────────────────────────────
+# Breaker de la VÍA DIRECTA (yt-dlp sin proxy)
+# ────────────────────────────────────────────────────────────────
+# En una IP de datacenter (Render, Railway) YouTube responde "sign in to
+# confirm you're not a bot" a los 7 player clients. El PO token NO lo
+# arregla: el bloqueo es por IP, no por token. Antes de caer's al proxy
+# SOCKS5 —la única vía que sí funciona desde ahí— el servidor gastaba
+# DIRECT_CLIENTS_DEADLINE (25s) en intentos que ya sabía queiban a fallar.
+#
+# A diferencia del breaker por client (que nunca queda abierto para no
+# romper preview/descarga), este solo OMITE la vía directa y NUNCA la vía
+# proxy. Es de tiempo acotado y se auto-sana: al vencer la ventana se
+# reintenta, de modo que un cambio en YouTube o un cambio de IP se
+# recupera solo. Con IP residencial (PC de casa) los clients directos
+# suelen funcionar, así que nunca se llega a abrir el breaker ahí.
+DIRECT_PATH_MIN_FAILURES = int(os.environ.get("DIRECT_PATH_MIN_FAILURES", "3"))
+DIRECT_PATH_DISABLED_S = int(os.environ.get("DIRECT_PATH_DISABLED_S", "300"))
+
+_direct_lock = threading.Lock()
+_direct_failures = 0
+_direct_disabled_until = 0.0
+
+
+def direct_path_available() -> bool:
+    """False mientras la vía directa esté en cooldown; True tras la ventana."""
+    with _direct_lock:
+        return time.time() >= _direct_disabled_until
+
+
+def record_direct_success() -> None:
+    global _direct_failures, _direct_disabled_until
+    with _direct_lock:
+        _direct_failures = 0
+        _direct_disabled_until = 0.0
+
+
+def record_direct_failure() -> None:
+    global _direct_failures, _direct_disabled_until
+    with _direct_lock:
+        _direct_failures += 1
+        if _direct_failures >= DIRECT_PATH_MIN_FAILURES:
+            _direct_disabled_until = time.time() + DIRECT_PATH_DISABLED_S
+
+
+def direct_path_state() -> dict:
+    with _direct_lock:
+        remaining = max(0.0, _direct_disabled_until - time.time())
+        return {
+            "available": remaining <= 0.0,
+            "failures": _direct_failures,
+            "disabled_for_s": int(remaining),
+        }
+
 # Backoff exponencial con jitter para evitar thundering herd
 _BACKOFF_BASE = 2.0  # segundos
 _BACKOFF_MAX = 16.0  # tope

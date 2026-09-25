@@ -4,7 +4,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir yt-dlp==2026.6.9
+# 2026.6.9 devolvía "HTTP Error 403: Forbidden" al descargar (ver AGENTS/continuar.md);
+# 2026.8.19 es la última de PyPI y la verificada descargando audio correctamente.
+RUN pip install --no-cache-dir yt-dlp==2026.8.19
 
 WORKDIR /app
 # Copia explícita solo del backend móvil (sin arrastrar desktop/ ni composeApp/)
