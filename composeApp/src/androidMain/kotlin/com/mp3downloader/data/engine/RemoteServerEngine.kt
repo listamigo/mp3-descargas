@@ -12,11 +12,14 @@ import io.ktor.client.request.parameter
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -51,6 +54,12 @@ class RemoteServerEngine : DownloadEngine {
     }
 
     private val activeDownloads = mutableMapOf<String, Boolean>()
+
+    // Las etiquetas se escriben después de marcar la descarga como completada, así
+    // que necesitan un scope propio: si colgaran del flow, la descarga se quedaría
+    // "terminada" en la UI sin terminar nunca. SupervisorJob evita que un fallo al
+    // incrustar tumbe nada, y Dispatchers.IO es el hilo adecuado (red + disco).
+    private val metadataScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
@@ -194,25 +203,37 @@ class RemoteServerEngine : DownloadEngine {
                     error = "Error: archivo demasiado pequeño ($downloadedBytes bytes). Puede que YouTube haya bloqueado la descarga."))
                 outputFile.delete()
             } else {
-                // Embed metadata (title, artist, cover art) into the audio file
-                try {
-                    android.util.Log.i("RemoteServerEngine", "Embedding metadata: title=${song.title}, artist=${song.artist}, thumb=${song.thumbnailUrl}")
-                    com.mp3downloader.domain.service.M4aMetadataWriter.writeMetadata(
-                        filePath = outputFile.absolutePath,
-                        title = song.title,
-                        artist = song.artist,
-                        thumbnailUrl = song.thumbnailUrl.takeIf { it.isNotBlank() && isSafeHttpsUrl(it) }
-                    )
-                } catch (e: Exception) {
-                    android.util.Log.e("RemoteServerEngine", "Metadata embedding failed: ${e.message}", e)
-                }
-
+                // El audio ya está completo y es reproducible en disco, así que se
+                // marca COMPLETED antes de escribir las etiquetas. Incrustar la
+                // portada exige una descarga de red encadenada (hasta 5 URLs, cada
+                // una con su timeout) más la reescritura completa del fichero, y
+                // hacerlo aquí congelaba la UI con la descarga al 100% durante
+                // decenas de segundos. Se hace en segundo plano: el fichero es
+                // válido sin etiquetas y estas aterrizan un instante después.
                 emit(DownloadResult(
                     songId = song.id,
                     status = DownloadStatus.COMPLETED,
                     progress = 1f,
                     outputPath = outputFile.absolutePath
                 ))
+
+                val metadataThumb = song.thumbnailUrl
+                    .takeIf { it.isNotBlank() && isSafeHttpsUrl(it) }
+                val targetFile = outputFile.absolutePath
+                val metaTitle = song.title
+                val metaArtist = song.artist
+                metadataScope.launch {
+                    try {
+                        com.mp3downloader.domain.service.M4aMetadataWriter.writeMetadata(
+                            filePath = targetFile,
+                            title = metaTitle,
+                            artist = metaArtist,
+                            thumbnailUrl = metadataThumb
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("RemoteServerEngine", "Metadata embedding failed: ${e.message}", e)
+                    }
+                }
             }
         } catch (e: Exception) {
             // No dejar parciales truncados en disco (p. ej. corte de red a mitad).

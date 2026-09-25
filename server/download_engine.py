@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -37,6 +38,17 @@ INVIDIOUS_INSTANCES = [
     "https://invidious.flokinet.to",
     "https://iv.ggtyler.dev",
 ]
+
+# Cuántas instancias sondar y con qué timeout. El sondeo era 5s por
+# instancia sobre las 9 de la lista: hasta 45s solo en decidir dónde
+# pedir el audio, y después otros 15s por instancia en la resolución. Este
+# es el ÚLTIMO recurso de la cadena, así que no puede gastar minutos.
+# Solo se sondean las primeras INVIDIOUS_PROBE_INSTANCES; si ninguna vive,
+# se responde rápido y el cliente pasa a su siguiente motor.
+INVIDIOUS_PROBE_INSTANCES = int(os.environ.get("INVIDIOUS_PROBE_INSTANCES", "3"))
+INVIDIOUS_PROBE_TIMEOUT = int(os.environ.get("INVIDIOUS_PROBE_TIMEOUT", "3"))
+INVIDIOUS_VIDEO_TIMEOUT = int(os.environ.get("INVIDIOUS_VIDEO_TIMEOUT", "10"))
+
 _invidious_active = None  # instance that worked last
 _invidious_lock = threading.Lock()
 
@@ -110,6 +122,27 @@ PLAYER_CLIENTS = [
 # "client+token" (e.g. "web+XXXX"). Strongly recommended to avoid bot
 # challenges without depending on a session cookie that can expire.
 PO_TOKEN = os.environ.get("YT_PO_TOKEN")
+
+# ═══════════════════════════════════════════════════════════════
+# Reintentos INTERNOS de yt-dlp (acotados)
+# ────────────────────────────────────────────────────────────────
+# Por defecto yt-dlp usa --extractor-retries 3 y --retries 10, con
+# backoff exponencial y --socket-timeout 20. Cuando YouTube devuelve el
+# reto de bot, UN solo comando se pasa 20-30 s reintentando internamente
+# antes de devolver el error.
+#
+# Eso es tiempo duplicado: el engine ya recorre 7 player clients y luego
+# hasta 4 proxies distintos, y cada uno de esos intentos arrastra su propio
+# reintento interno. Por eso el coste real era de minutos. Se acota el
+# reintento interno a 1 y la cadena de respaldo se encarga del resto.
+YTDLP_EXTRACTOR_RETRIES = int(os.environ.get("YTDLP_EXTRACTOR_RETRIES", "1"))
+YTDLP_RETRIES = int(os.environ.get("YTDLP_RETRIES", "3"))
+YTDLP_SOCKET_TIMEOUT = int(os.environ.get("YTDLP_SOCKET_TIMEOUT", "20"))
+
+# Cuánto esperar un proxy para que responda antes de pagarlo con yt-dlp.
+# Un proxy que resuelve --get-url en ~3s es el caso bueno; uno que tarda
+# más que esto no va a improve y solo consume el deadline del request.
+PROXY_PROBE_TIMEOUT = int(os.environ.get("PROXY_PROBE_TIMEOUT", "6"))
 
 # ═══════════════════════════════════════════════════════════════
 # Circuit breaker por player client
@@ -228,7 +261,12 @@ _HARD_BAN_HINTS = (
 # reintenta, de modo que un cambio en YouTube o un cambio de IP se
 # recupera solo. Con IP residencial (PC de casa) los clients directos
 # suelen funcionar, así que nunca se llega a abrir el breaker ahí.
-DIRECT_PATH_MIN_FAILURES = int(os.environ.get("DIRECT_PATH_MIN_FAILURES", "3"))
+# Una IP de datacenter o no lo es, y no cambia entre peticiones: si el
+# primer request completo falla en la vía directa, los siguientes van a fallar
+# igual. Por eso el umbral es 1 y no 3. Con 3, cada reinicio de contenedor
+# (frecuente en planes gratuitos) cobraba 3 descargas completas de espera
+# antes de que el breaker llegara a abrirse. Con 1, solo la primera.
+DIRECT_PATH_MIN_FAILURES = int(os.environ.get("DIRECT_PATH_MIN_FAILURES", "1"))
 DIRECT_PATH_DISABLED_S = int(os.environ.get("DIRECT_PATH_DISABLED_S", "300"))
 
 _direct_lock = threading.Lock()
@@ -305,6 +343,31 @@ _FREE_PROXY_CACHE_TTL = 300  # 5 min
 _free_proxy_cache = {"proxies": [], "ts": 0.0}
 _free_proxy_lock = threading.Lock()
 
+# Cuántos candidatos de la lista gratuita se prueban por petición. Antes 20:
+# la lista de GeoNode está llena de SOCKS5 muertos, así que 20 candidatos
+# con 6s cada uno son 120s por intento y hasta 480s por descarga. Con el
+# sondeo TCP previo (1s) 20 candidatos cuestan ~20s en el peor caso, y los
+# que sí funcionan se recuerdan para el siguiente request.
+FREE_PROXY_CANDIDATES = int(os.environ.get("FREE_PROXY_CANDIDATES", "20"))
+
+# Sondeo TCP barato para descartar proxies muertos ANTES de pagarles una
+# invocación de yt-dlp. Los proxies que rechazan la conexión mueren rápido,
+# pero muchos aceptan el handshake y se cuelgan: sin este filtro cada uno
+# costaba los PROXY_PROBE_TIMEOUT completos.
+TCP_PROBE_TIMEOUT = float(os.environ.get("TCP_PROBE_TIMEOUT", "1.5"))
+
+# El proxy que funcionó, para no re-descubrirlo en cada request. Se guarda
+# en un fichero porque en un plan gratis el contenedor se reinicia o se
+# suspende con frecuencia, y la memoria del proceso se pierde: sin esto,
+# cada descarga tras un reinicio volvería a pagar el escaneo completo.
+# WORKING_PROXY en el entorno tiene prioridad (permite fijarlo sin esperar
+# a que el proceso aprenda uno).
+WORKING_PROXY = os.environ.get("WORKING_PROXY", "").strip()
+WORKING_PROXY_FILE = os.path.join(
+    os.environ.get("LOG_DIR", os.path.expanduser("~/.mp3downloader/logs")),
+    "working_proxy.txt",
+)
+
 # Memoria de proxies que ALGUNA VEZ funcionaron para descargar. La lista
 # gratuita rota y muchos estan muertos; probarlos en orden aleatorio gasta
 # decenas de segundos en proxies que nunca responden. Al recordar los que
@@ -315,6 +378,41 @@ _working_proxy_lock = threading.Lock()
 _WORKING_PROXY_MAX = 8
 
 
+def _load_working_proxies() -> list[str]:
+    """Proxies conocidos, empezando por WORKING_PROXY y luego el fichero.
+
+    Se llama en cada _find_working_proxy para que un proxy fijado por
+    entorno surja sin necesidad de reiniciar el proceso.
+    """
+    known: list[str] = []
+    if WORKING_PROXY and WORKING_PROXY not in known:
+        known.append(WORKING_PROXY)
+    try:
+        if os.path.isfile(WORKING_PROXY_FILE):
+            with open(WORKING_PROXY_FILE, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    p = line.strip()
+                    if p and p not in known:
+                        known.append(p)
+    except OSError as e:
+        logger.debug(f"No se pudo leer {WORKING_PROXY_FILE}: {e}")
+    with _working_proxy_lock:
+        for p in _working_proxy_cache:
+            if p not in known:
+                known.append(p)
+    return known
+
+
+def _persist_working_proxy(proxy: str) -> None:
+    """Guarda el proxy bueno en disco para sobrevivir a un reinicio."""
+    try:
+        os.makedirs(os.path.dirname(WORKING_PROXY_FILE), exist_ok=True)
+        with open(WORKING_PROXY_FILE, "w", encoding="utf-8") as fh:
+            fh.write(proxy + "\n")
+    except OSError as e:
+        logger.debug(f"No se pudo escribir {WORKING_PROXY_FILE}: {e}")
+
+
 def _remember_working_proxy(proxy: str) -> None:
     """Marca un proxy como que funciono (lo delicamos para reusarlo)."""
     with _working_proxy_lock:
@@ -322,6 +420,26 @@ def _remember_working_proxy(proxy: str) -> None:
             _working_proxy_cache.remove(proxy)
         _working_proxy_cache.insert(0, proxy)
         del _working_proxy_cache[_WORKING_PROXY_MAX:]
+    _persist_working_proxy(proxy)
+
+
+def _proxy_tcp_alive(proxy: str, timeout: float | None = None) -> bool:
+    """True si el puerto del proxy acepta conexión dentro del timeout.
+
+    Filtro previo a yt-dlp: un SOCKS5 muerto se descarta en ~timeout (o al
+    instante si rechaza la conexión) en lugar de gastar una invocación
+    completa de yt-dlp. Un proxy sano de GeoNode acepta en menos de 1 s, así
+    que el filtro no descarta ninguno que sirva.
+    """
+    host_port = proxy.split("://", 1)[-1]
+    host, _, port = host_port.rpartition(":")
+    if not host or not port.isdigit():
+        return False
+    try:
+        with socket.create_connection((host, int(port)), timeout or TCP_PROBE_TIMEOUT):
+            return True
+    except (OSError, ValueError):
+        return False
 
 
 def _fetch_free_proxies() -> list[str]:
@@ -398,13 +516,26 @@ def _try_with_proxy(video_id: str) -> str | None:
     un proxy residencial o al menos uno que no esté en lista negra es
     necesario para que las descargas funcionen.
     """
-    proxies = _fetch_free_proxies()
-    if not proxies:
+    fresh = _fetch_free_proxies()
+    if not fresh:
         return None
 
+    # Los proxies ya conocidos se prueban primero: si uno funcionó para otra
+    # descarga, es el candidato con más probabilidades.
+    candidates: list[str] = []
+    for p in _load_working_proxies():
+        if p not in candidates:
+            candidates.append(p)
+    for p in fresh:
+        if p not in candidates:
+            candidates.append(p)
+
     url = f"https://youtube.com/watch?v={video_id}"
-    # Probar max 8 proxies (más intentos = más probabilidades)
-    for proxy in proxies[:8]:
+    # Probar los primeros FREE_PROXY_CANDIDATES, descartando primero los
+    # que ni siquiera aceptan conexión (antes eran 8 proxies x 15s = 120s).
+    for proxy in candidates[:FREE_PROXY_CANDIDATES]:
+        if not _proxy_tcp_alive(proxy):
+            continue
         try:
             cmd = [
                 "yt-dlp", "--no-warnings",
@@ -412,9 +543,15 @@ def _try_with_proxy(video_id: str) -> str | None:
                 "--user-agent", random.choice(USER_AGENTS),
                 "--extractor-args", "youtube:player_client=android",
                 "-f", "bestaudio/best",
+                "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
+                "--retries", str(YTDLP_RETRIES),
+                "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
                 "--get-url", url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=PROXY_PROBE_TIMEOUT,
+            )
             if result.returncode == 0 and result.stdout.strip():
                 logger.info(f"Audio URL via proxy {proxy} for {video_id}")
                 return result.stdout.strip().split("\n")[0].strip()
@@ -469,8 +606,7 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
     """
     blocked = blocked or set()
     fresh = _fetch_free_proxies()
-    with _working_proxy_lock:
-        known = list(_working_proxy_cache)
+    known = _load_working_proxies()
     # Probar primeros los ya conocidos, luego el resto de la lista fresca.
     candidates: list[str] = []
     for p in known:
@@ -481,12 +617,17 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
             candidates.append(p)
 
     url = f"https://youtube.com/watch?v={video_id}"
-    # Timeout corto por proxy (6s): los muertos fallan en <2s ("connection
-    # refused") y los buenos responden en ~3s (validado: 193.25.215.182 dio
-    # get-url en ~3s). Probamos hasta 20 candidatos (antes 8) para que el
-    # buen proxy de la lista tenga mas chance de estar en el rango probado,
-    # sin que el costo en tiempo dispare (los muertos apenas consumen).
-    for proxy in candidates[:20]:
+    # Timeout corto por proxy (PROXY_PROBE_TIMEOUT, 6s por defecto): los
+    # muertos se descartan antes con el sondeo TCP y los buenos responden en
+    # ~3s (validado: 193.25.215.182 dio get-url en ~3s). Se prueban hasta
+    # FREE_PROXY_CANDIDATES, con el filtro TCP el coste de los muertos es
+    # ~1.5s cada uno en lugar de los 6s completos.
+    probed = 0
+    for proxy in candidates[:FREE_PROXY_CANDIDATES]:
+        if not _proxy_tcp_alive(proxy):
+            logger.debug(f"Proxy {proxy} no acepta conexión, descartado")
+            continue
+        probed += 1
         try:
             cmd = [
                 "yt-dlp", "--no-warnings",
@@ -494,9 +635,15 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
                 "--user-agent", random.choice(USER_AGENTS),
                 "--extractor-args", "youtube:player_client=android",
                 "-f", "bestaudio/best",
+                "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
+                "--retries", str(YTDLP_RETRIES),
+                "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
                 "--get-url", url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=PROXY_PROBE_TIMEOUT,
+            )
             if result.returncode == 0 and result.stdout.strip():
                 logger.info(f"Proxy activo para {video_id}: {proxy}")
                 # NOTA: NO marcamos el proxy como "working" aqui. Que resuelva
@@ -506,6 +653,8 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
                 return proxy
         except Exception:
             continue
+    logger.info(f"Sin proxy utilizable para {video_id} "
+                f"({probed} probados tras filtro TCP de {len(candidates)})")
     return None
 
 
@@ -539,13 +688,17 @@ def _resolve_invidious_instance() -> str | None:
     with _invidious_lock:
         # Si ya sabemos cuál funciona, probar esa primero
         if _invidious_active:
-            test = _invidious_request(f"{_invidious_active}/api/v1/stats", timeout=5)
+            test = _invidious_request(f"{_invidious_active}/api/v1/stats",
+                                      timeout=INVIDIOUS_PROBE_TIMEOUT)
             if test:
                 return _invidious_active
             _invidious_active = None
 
-        for instance in INVIDIOUS_INSTANCES:
-            test = _invidious_request(f"{instance}/api/v1/stats", timeout=5)
+        # Solo las primeras INVIDIOUS_PROBE_INSTANCES: sondear las 9 a 5s
+        # eran hasta 45s de espera en el último eslabón de la cadena.
+        for instance in INVIDIOUS_INSTANCES[:INVIDIOUS_PROBE_INSTANCES]:
+            test = _invidious_request(f"{instance}/api/v1/stats",
+                                      timeout=INVIDIOUS_PROBE_TIMEOUT)
             if test:
                 _invidious_active = instance
                 logger.info(f"Invidious instance activa: {instance}")
@@ -569,7 +722,8 @@ def invidious_get_audio_url(video_id: str) -> str | None:
     )
 
     for inst in instances_to_try:
-        data = _invidious_request(f"{inst}/api/v1/videos/{video_id}", timeout=15)
+        data = _invidious_request(f"{inst}/api/v1/videos/{video_id}",
+                                  timeout=INVIDIOUS_VIDEO_TIMEOUT)
         if not data or not isinstance(data, dict):
             continue
 
@@ -664,6 +818,15 @@ def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     cmd = ["yt-dlp", "--no-warnings"]
     player = client or PLAYER_CLIENTS[0]
     extractor = f"youtube:player_client={player}"
+    # Reintentos internos acotados: por defecto yt-dlp reintenta 3 veces la
+    # extracción y 10 la descarga con backoff exponencial, y una sola
+    # invocación bloqueada se pasa 20-30 s. Como el engine ya recorre
+    # 7 player clients y 4 proxies, ese reintento es tiempo duplicado.
+    cmd.extend([
+        "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
+        "--retries", str(YTDLP_RETRIES),
+        "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
+    ])
     if PO_TOKEN:
         extractor += f";po_token={PO_TOKEN}"
     # PO token provider — genera tokens automáticamente para cada video.

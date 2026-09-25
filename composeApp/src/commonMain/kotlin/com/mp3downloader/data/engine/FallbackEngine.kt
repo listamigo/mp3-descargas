@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.flow
 /**
  * @param beforeSearch hook run before every search. The Android wiring uses it
  *   to warm up the remote host in the background without delaying the query.
+ * @param beforeDownload same warm-up, on the download path. It exists because a
+ *   download does not always follow a search, and the cold start of a free
+ *   container costs 30-50 s of a progress bar stuck at 0%.
  * @param preferredForSearch engines to try first when [lastSearchEngine] has
  *   not pinned pagination yet. Platform code decides this; kept as a hook so
  *   this common class stays free of platform types.
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.flow
 class FallbackEngine(
     private val engines: List<DownloadEngine>,
     private val beforeSearch: suspend () -> Unit = {},
+    private val beforeDownload: suspend () -> Unit = {},
     private val preferredForSearch: () -> List<DownloadEngine> = { emptyList() }
 ) : DownloadEngine {
 
@@ -115,6 +119,12 @@ class FallbackEngine(
     override fun download(song: Song, outputDir: String): Flow<DownloadResult> = flow {
         val errors = mutableListOf<String>()
         var cancelled = false
+
+        // Igual que en search: despertar el host remoto en segundo plano. Sin
+        // esto, una descarga que no viene precedida de una búsqueda reciente
+        // paga los 30-50 s de arranque en frío del contenedor gratis, con la
+        // barra de progreso clavada en 0%. El hook no bloquea la descarga.
+        beforeDownload()
 
         // Primera pasada: intentar cada motor una vez
         val attempts = mutableListOf<Pair<DownloadEngine, Int>>()

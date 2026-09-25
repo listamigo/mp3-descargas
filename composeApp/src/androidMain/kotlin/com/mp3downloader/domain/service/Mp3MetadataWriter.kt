@@ -14,6 +14,12 @@ object Mp3MetadataWriter {
     private const val TAG = "Mp3MetadataWriter"
     private const val COVER_ART_MIN_SIZE = 5000
 
+    // La portada pesa unos pocos KB, así que 5s basta de sobra con cualquier
+    // red decente. Acotarlo evita que una URL colgada retenga el trabajo en
+    // segundo plano durante tiempo indefinido.
+    private const val THUMBNAIL_CONNECT_TIMEOUT_MS = 5_000
+    private const val THUMBNAIL_READ_TIMEOUT_MS = 5_000
+
     fun writeMetadata(
         filePath: String,
         title: String,
@@ -55,7 +61,11 @@ object Mp3MetadataWriter {
 
                     for (url in fallbackUrls) {
                         android.util.Log.i(TAG, "Downloading thumbnail: $url")
-                        val bytes = URL(url).readBytes()
+                        val bytes = readBytesWithTimeout(url)
+                        if (bytes == null) {
+                            android.util.Log.w(TAG, "Thumbnail download failed/timeout at $url, trying next...")
+                            continue
+                        }
                         if (bytes.size >= COVER_ART_MIN_SIZE) {
                             android.util.Log.i(TAG, "Thumbnail OK: ${bytes.size} bytes from $url")
                             bestBytes = bytes
@@ -90,6 +100,28 @@ object Mp3MetadataWriter {
 
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Failed to write MP3 metadata: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Descarga la portada con timeouts reales de conexión y lectura.
+     *
+     * Antes se usaba `URL(url).readBytes()`, cuyos timeouts de socket en Java
+     * son 0 (infinito): un CDN que aceptaba la conexión y se quedaba colgado
+     * dejaba la llamada bloqueada indefinidamente, y la cadena de alternativas
+     * lo empeoraba (hasta 5 URLs seguidas). Aquí cada intento está acotado, así
+     * que una URL muerta cuesta como mucho el timeout en lugar de detener toda
+     * la operación.
+     */
+    private fun readBytesWithTimeout(url: String): ByteArray? {
+        return try {
+            val conn = URL(url).openConnection()
+            conn.connectTimeout = THUMBNAIL_CONNECT_TIMEOUT_MS
+            conn.readTimeout = THUMBNAIL_READ_TIMEOUT_MS
+            conn.getInputStream().use { it.readBytes() }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Thumbnail fetch failed for $url: ${e.message}")
+            null
         }
     }
 

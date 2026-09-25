@@ -459,27 +459,33 @@ class APIHandler(BaseHTTPRequestHandler):
         os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
 
         # Límite de tiempo para el bucle de clients DIRECTOS. En IPs de
-        # datacenter (Render free) YouTube responde "Sign in to confirm
-        # you're not a bot" a TODOS los clients, y cada fallo tarda ~5s +
-        # backoff, por lo que recorrer los 7 puede agotar el timeout del
-        # request (~120s) ANTES de llegar al fallback de proxy. Forzamos un
-        # salto temprano al proxy para que la descarga complete a tiempo.
-        DIRECT_CLIENTS_DEADLINE = 25.0
+        # datacenter (Render/Railway) YouTube responde "Sign in to confirm
+        # you're not a bot" a TODOS los clients, y cada fallo tarda varios
+        # segundos, por lo que recorrer los 7 agotaba el timeout del request
+        # ANTES de llegar al fallback de proxy.
+        #
+        # Bajado de 25s a 8s: con los reintentos internos de yt-dlp acotados
+        # a 1 (YTDLP_EXTRACTOR_RETRIES), un client bloqueado falla en ~1-2s,
+        # así que 8s dan margen para probar 3-4 clients y saltar al proxy,
+        # que es la única vía que funciona desde datacenter. Los 25s solo se
+        # alcanzaban cuando un client se colgaba, y ese caso lo cubre el
+        # socket timeout, no el deadline.
+        direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "8"))
         if not direct_path_available():
             # Ya sabemos que esta IP recibe el reto de bot en todos los
-            # clients. Saltar los 25s de intentos fallidos y yendo directo al
-            # proxy, que es la única vía que funciona desde datacenter.
-            DIRECT_CLIENTS_DEADLINE = 0.0
+            # clients. Saltar los intentos fallidos y yendo directo al proxy.
+            direct_deadline = 0.0
             logger.info(
                 f"Vía directa en cooldown ({video_id}): yendo directo al proxy "
-                f"para no gastar {25:.0f}s en clients bloqueados"
+                f"sin gastar los {os.environ.get('DIRECT_CLIENTS_DEADLINE', '8')}s "
+                f"de clients bloqueados"
             )
         _clients_start = time.monotonic()
 
         for client in ordered_clients():
-            if time.monotonic() - _clients_start > DIRECT_CLIENTS_DEADLINE:
-                logger.info(f"Deadline de clients directos alcanzado para {video_id}, "
-                            f"pasando a proxy...")
+            if time.monotonic() - _clients_start > direct_deadline:
+                logger.info(f"Deadline de clients directos alcanzado para {video_id} "
+                            f"({direct_deadline:.0f}s), pasando a proxy...")
                 break
             yt_cmd = _base_cmd(client) + [
                 "-o", "-",
@@ -601,7 +607,8 @@ class APIHandler(BaseHTTPRequestHandler):
         # Lista negra por-request: proxies cuya descarga COMPLETA falló.
         # Así el reintento no vuelve a probar el mismo proxy fallido.
         _blocked_proxies: set = set()
-        for _attempt in range(4):
+        max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
+        for _attempt in range(max_proxy_attempts):
             proxy = _find_working_proxy(video_id, blocked=_blocked_proxies)
             if not proxy:
                 logger.warning(f"Proxy falló para {video_id} (no se encontró proxy), "
@@ -616,7 +623,8 @@ class APIHandler(BaseHTTPRequestHandler):
                         f"probando otro proxy...")
 
         # Agotados los intentos de proxy sin producir audio → Invidious
-        logger.warning(f"Proxy falló para {video_id} (3 intentos sin audio), "
+        logger.warning(f"Proxy falló para {video_id} "
+                       f"({max_proxy_attempts} intentos sin audio), "
                        f"intentando Invidious fallback...")
         self._proxy_download_invidious(video_id, title)
 
@@ -653,11 +661,21 @@ class APIHandler(BaseHTTPRequestHandler):
             # el timeout global. Un proxy que resuelve --get-url puede aun
             # colgarse al descargar, y bloquear aqui gastaria decenas de
             # segundos por intento.
+            #
+            # Bajado de 35s a 12s: un proxy sano entrega el primer bloque de
+            # audio en 1-3s (es lo que se midió en el get-url que lo
+            # seleccionó). 12s es margen de sobra para el arranque de yt-dlp
+            # más el PO token; más allá de eso el proxy está muerto y cada
+            # segundo extra se paga con los otros intentos de la cadena.
+            first_byte_timeout = float(
+                os.environ.get("PROXY_FIRST_BYTE_TIMEOUT", "12"))
             try:
                 import select as _select
-                _ready, _, _ = _select.select([p2.stdout], [], [], 35)
+                _ready, _, _ = _select.select([p2.stdout], [], [], first_byte_timeout)
                 if not _ready:
-                    logger.warning(f"Proxy download timeout (sin audio en 35s) para {video_id}")
+                    logger.warning(
+                        f"Proxy download timeout (sin audio en {first_byte_timeout:.0f}s) "
+                        f"para {video_id}")
                     try: p1.terminate()
                     except Exception: pass
                     try: p2.terminate()

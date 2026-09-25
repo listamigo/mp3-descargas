@@ -37,6 +37,11 @@ actual val platformModule: Module = module {
                     CoroutineScope(currentCoroutineContext()).launch { RemoteHealth.refresh() }
                 }
             },
+            beforeDownload = {
+                if (!RemoteHealth.isWarm) {
+                    CoroutineScope(currentCoroutineContext()).launch { RemoteHealth.refresh() }
+                }
+            },
             preferredForSearch = { if (RemoteHealth.isWarm) listOf(remote) else emptyList() }
         )
     }
