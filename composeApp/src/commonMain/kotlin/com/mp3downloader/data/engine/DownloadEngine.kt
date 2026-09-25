@@ -15,6 +15,14 @@ data class DownloadResult(
 /** Number of results requested per search page. */
 const val SEARCH_PAGE_SIZE: Int = 20
 
+/**
+ * Error message used by every engine to signal that the user cancelled the
+ * download. FallbackEngine relies on it to stop the fallback chain instead of
+ * trying the remaining engines, and the ViewModel uses it to avoid showing a
+ * "download failed" message for a deliberate cancellation.
+ */
+const val CANCELLED_ERROR: String = "Cancelado"
+
 interface DownloadEngine {
     suspend fun search(query: String, offset: Int = 0): Result<List<Song>>
     suspend fun getAudioStreamUrl(song: Song): Result<String>

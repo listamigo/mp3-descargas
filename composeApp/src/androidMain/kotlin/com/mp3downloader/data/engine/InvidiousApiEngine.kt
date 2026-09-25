@@ -24,15 +24,18 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.coroutineContext
 
-object InvidiousConfig {
-    var customInstanceUrl: String? = null
-}
-
 class InvidiousApiEngine : DownloadEngine {
+
+    /** Reject absurdly large responses to avoid filling the device storage. */
+    private val maxDownloadBytes = 250L * 1024 * 1024
 
     private val json = Json { ignoreUnknownKeys = true }
     private val httpClient = HttpClient {
@@ -47,23 +50,23 @@ class InvidiousApiEngine : DownloadEngine {
         }
     }
 
-    private val defaultFallbacks = listOf(
-        "https://inv.zoomerville.com",
-        "https://invidious.slipfox.xyz",
-        "https://invidious.projectsegfau.lt",
-        "https://invidious.protokolla.fi",
-        "https://invidious.flokinet.to",
-        "https://vid.puffyan.us",
-        "https://iv.ggtyler.dev",
-    )
-
     private var activeUrl: String? = null
     private var instanceVerified = false
     private val activeDownloads = mutableMapOf<String, Boolean>()
 
+    /**
+     * The official directory (api.invidious.io) currently reports a single
+     * instance with the API enabled and answering, verified end to end: search,
+     * /api/v1/videos and full audio download. Instances go down constantly, so
+     * this list is intentionally short to keep resolution fast, and the user
+     * can override it in Settings.
+     */
+    private val defaultInstances = listOf(
+        "https://invidious.f5.si",
+    )
+
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {
-        return runCatching {
-            android.util.Log.d("InvidiousApi", "search: starting query=$query offset=$offset")
+        val result = runCatching {
             val url = resolveInstance()
             android.util.Log.d("InvidiousApi", "search: using instance=$url")
             val page = (offset / SEARCH_PAGE_SIZE) + 1
@@ -76,26 +79,45 @@ class InvidiousApiEngine : DownloadEngine {
                 }
                 .bodyAsText()
             android.util.Log.d("InvidiousApi", "search: response length=${raw.length}")
+            if (raw.trimStart().startsWith("<")) {
+                val preview = raw.take(100).replace("\n", " ")
+                throw RuntimeException("Invidious ($url) devolvió HTML (bloqueado o caída). Respuesta: $preview")
+            }
             val items = json.decodeFromString<List<InvidiousSearchItem>>(raw)
             val songs = items.mapNotNull { item ->
-                if (!isValidYouTubeId(item.videoId)) return@mapNotNull null
+                // La búsqueda de Invidious devuelve también canales y playlists,
+                // sin videoId ni title. Se descartan aquí; el DTO ya no revienta
+                // al parsearlos.
+                val videoId = item.videoId
+                val title = item.title
+                if (videoId == null || title == null || title.isBlank() || !isValidYouTubeId(videoId)) {
+                    android.util.Log.d("InvidiousApi", "search: descartado resultado sin videoId (type=${item.author})")
+                    return@mapNotNull null
+                }
                 Song(
-                    id = item.videoId,
-                    title = item.title,
+                    id = videoId,
+                    title = title,
                     artist = item.author ?: "Unknown",
                     duration = (item.lengthSeconds ?: 0L),
-                    thumbnailUrl = item.videoThumbnails?.firstOrNull { it.quality == "medium" }?.url
-                        ?: "https://i.ytimg.com/vi/${item.videoId}/default.jpg",
+                    // La miniatura se pide SIEMPRE al CDN de YouTube, no a la
+                    // instancia: Invidious sirve las suyas con su propio proxy de
+                    // imágenes y, cuando ese proxy (o el companion) cae, responde
+                    // HTTP 200 con una página HTML en lugar de un JPEG. El
+                    // BitmapFactory no la decodifica y se quedaba sin miniatura.
+                    // El id ya viene validado por isValidYouTubeId.
+                    thumbnailUrl = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
                     audioUrl = null
                 )
             }
             android.util.Log.d("InvidiousApi", "search: ${songs.size} results")
             songs
         }
+        if (result.isFailure) invalidateInstance()
+        return result
     }
 
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
-        return runCatching {
+        val result = runCatching {
             val url = resolveInstance()
             val raw = httpClient
                 .get("$url/api/v1/videos/${song.id}")
@@ -106,7 +128,19 @@ class InvidiousApiEngine : DownloadEngine {
                 throw RuntimeException("Invidious ($url) devolvió HTML (bloqueado). Respuesta: $preview")
             }
 
-            val video = json.decodeFromString<InvidiousVideoResponse>(raw)
+            val element = json.parseToJsonElement(raw)
+
+            // El companion de Invidious contesta HTTP 200 con {"error": ...}
+            // cuando no consigue hablar con YouTube (caída muy frecuente). Sin
+            // este chequeo el DTO separseaba con todos los campos a null y el
+            // usuario veía "Sin streams de audio", que apunta a otra causa.
+            val errorMsg = (element as? JsonObject)?.get("error")
+                ?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
+            if (!errorMsg.isNullOrBlank()) {
+                throw RuntimeException("Invidious ($url) no pudo resolver el video: $errorMsg")
+            }
+
+            val video = json.decodeFromJsonElement<InvidiousVideoResponse>(element)
 
             val formats = video.adaptiveFormats ?: video.formatStreams ?: emptyList()
             val bestAudio = formats
@@ -125,6 +159,8 @@ class InvidiousApiEngine : DownloadEngine {
             }
             audioUrl
         }
+        if (result.isFailure) invalidateInstance()
+        return result
     }
 
     override fun download(
@@ -140,9 +176,10 @@ class InvidiousApiEngine : DownloadEngine {
 
         emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, 0f))
 
+        val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
+        val outputFile = uniqueOutputFile(outputDir, safeTitle, "m4a")
+
         try {
-            val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
-            val outputFile = uniqueOutputFile(outputDir, safeTitle, "m4a")
             activeDownloads[song.id] = true
 
             val response: HttpResponse = httpClient.get(audioUrl)
@@ -152,6 +189,12 @@ class InvidiousApiEngine : DownloadEngine {
             val bufferSize = 8192
             var lastEmitTime = 0L
 
+            if (totalBytes > maxDownloadBytes) {
+                emit(DownloadResult(song.id, DownloadStatus.FAILED,
+                    error = "Archivo demasiado grande para descargar (máx 250 MB)."))
+                return@flow
+            }
+
             outputFile.parentFile?.mkdirs()
             FileOutputStream(outputFile).use { outputStream ->
                 val buffer = ByteArray(bufferSize)
@@ -160,6 +203,14 @@ class InvidiousApiEngine : DownloadEngine {
                     if (bytesRead == -1) break
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
+
+                    if (downloadedBytes > maxDownloadBytes) {
+                        outputStream.close()
+                        outputFile.delete()
+                        emit(DownloadResult(song.id, DownloadStatus.FAILED,
+                            error = "Archivo demasiado grande para descargar (máx 250 MB)."))
+                        return@flow
+                    }
 
                     val now = System.currentTimeMillis()
                     if (now - lastEmitTime >= 300) {
@@ -175,7 +226,8 @@ class InvidiousApiEngine : DownloadEngine {
             }
 
             if (activeDownloads[song.id] != true) {
-                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "Cancelled"))
+                outputFile.delete()
+                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = CANCELLED_ERROR))
             } else if (downloadedBytes == 0L) {
                 emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "Invidious devolvió contenido vacío"))
                 outputFile.delete()
@@ -200,6 +252,8 @@ class InvidiousApiEngine : DownloadEngine {
                 ))
             }
         } catch (e: Exception) {
+            // No dejar parciales truncados en disco (p. ej. corte de red a mitad).
+            outputFile.delete()
             emit(DownloadResult(song.id, DownloadStatus.FAILED, error = e.message))
         } finally {
             activeDownloads.remove(song.id)
@@ -210,29 +264,38 @@ class InvidiousApiEngine : DownloadEngine {
         activeDownloads[songId] = false
     }
 
+    private fun invalidateInstance() {
+        activeUrl = null
+        instanceVerified = false
+    }
+
     private suspend fun resolveInstance(): String {
         if (instanceVerified && activeUrl != null) return activeUrl!!
-        val custom = InvidiousConfig.customInstanceUrl
-        if (custom != null && testInstance(custom)) {
-            activeUrl = custom
-            instanceVerified = true
-            return custom
+
+        // A user-provided instance always wins; otherwise fall back to the
+        // verified default. Probing long dead instance lists serially added
+        // minutes of latency to every failed search.
+        val candidates = buildList {
+            RemoteConfig.invidiousUrl?.let { add(it) }
+            defaultInstances.forEach { if (it !in this) add(it) }
         }
-        if (activeUrl != null && testInstance(activeUrl!!)) {
-            instanceVerified = true
-            return activeUrl!!
-        }
-        for (url in defaultFallbacks) {
-            if (url == activeUrl) continue
+
+        for (url in candidates) {
             if (testInstance(url)) {
                 activeUrl = url
                 instanceVerified = true
                 return url
             }
         }
-        android.util.Log.e("InvidiousApi", "resolveInstance: all ${defaultFallbacks.size} instances failed")
-        throw RuntimeException("No se pudo conectar a ningún servidor de Invidious. " +
-            "Configura tu propio servidor en ⚙ Ajustes > Servidor.")
+
+        invalidateInstance()
+        val configured = RemoteConfig.invidiousUrl
+        throw RuntimeException(
+            if (configured != null)
+                "No se pudo conectar con la instancia de Invidious configurada ($configured)."
+            else
+                "No hay instancias de Invidious disponibles. Añade una en ⚙ Ajustes."
+        )
     }
 
     private suspend fun testInstance(url: String): Boolean {
@@ -269,17 +332,5 @@ class InvidiousApiEngine : DownloadEngine {
                lower.contains("captcha") ||
                lower.trimStart().startsWith("<") ||
                (lower.contains("error") && !lower.contains("\"items\"") && body.length < 200)
-    }
-}
-
-private fun uniqueOutputFile(outputDir: String, baseName: String, extension: String): File {
-    val dir = File(outputDir)
-    val base = File(dir, "$baseName.$extension")
-    if (!base.exists()) return base
-    var n = 1
-    while (true) {
-        val candidate = File(dir, "$baseName ($n).$extension")
-        if (!candidate.exists()) return candidate
-        n++
     }
 }

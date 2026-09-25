@@ -30,11 +30,10 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.coroutineContext
 
-object PipedConfig {
-    var customInstanceUrl: String? = null
-}
-
 class PipedApiEngine : DownloadEngine {
+
+    /** Reject absurdly large responses to avoid filling the device storage. */
+    private val maxDownloadBytes = 250L * 1024 * 1024
 
     private val json = Json { ignoreUnknownKeys = true }
     private val httpClient = HttpClient {
@@ -48,20 +47,12 @@ class PipedApiEngine : DownloadEngine {
         }
     }
 
-    private val defaultFallbacks = listOf(
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.syncpundit.io",
-        "https://api-piped.mha.fi",
-        "https://pipedapi.r4fo.com",
-        "https://pipedapi.frontendfriendly.xyz",
-    )
-
     private var activeUrl: String? = null
     private var instanceVerified = false
     private val activeDownloads = mutableMapOf<String, Boolean>()
 
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {
-        return runCatching {
+        val result = runCatching {
             val url = resolveInstance()
             val page = (offset / SEARCH_PAGE_SIZE) + 1
             val raw = httpClient
@@ -86,15 +77,20 @@ class PipedApiEngine : DownloadEngine {
                     title = item.title,
                     artist = item.uploaderName ?: "Unknown",
                     duration = (item.duration ?: 0L),
-                    thumbnailUrl = item.thumbnail ?: "",
+                    // Ver InvidiousApiEngine: la miniatura se pide al CDN de
+                    // YouTube, no a la instancia de Piped, cuyo proxy de imágenes
+                    // puede devolver HTML en lugar de un JPEG.
+                    thumbnailUrl = "https://i.ytimg.com/vi/$id/hqdefault.jpg",
                     audioUrl = null
                 )
             }
         }
+        if (result.isFailure) invalidateInstance()
+        return result
     }
 
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
-        return runCatching {
+        val result = runCatching {
             val url = resolveInstance()
             val raw = httpClient
                 .get("$url/streams/${song.id}")
@@ -149,6 +145,8 @@ class PipedApiEngine : DownloadEngine {
             val preview = raw.take(200).replace("\n", " ")
             throw RuntimeException("Sin streams en $url. Respuesta: $preview")
         }
+        if (result.isFailure) invalidateInstance()
+        return result
     }
 
     override fun download(
@@ -164,9 +162,10 @@ class PipedApiEngine : DownloadEngine {
 
         emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, 0f))
 
+        val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
+        val outputFile = uniqueOutputFile(outputDir, safeTitle, "m4a")
+
         try {
-            val safeTitle = song.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
-            val outputFile = uniqueOutputFile(outputDir, safeTitle, "m4a")
             activeDownloads[song.id] = true
 
             val response: HttpResponse = httpClient.get(audioUrl)
@@ -176,6 +175,12 @@ class PipedApiEngine : DownloadEngine {
             val bufferSize = 8192
             var lastEmitTime = 0L
 
+            if (totalBytes > maxDownloadBytes) {
+                emit(DownloadResult(song.id, DownloadStatus.FAILED,
+                    error = "Archivo demasiado grande para descargar (máx 250 MB)."))
+                return@flow
+            }
+
             outputFile.parentFile?.mkdirs()
             FileOutputStream(outputFile).use { outputStream ->
                 val buffer = ByteArray(bufferSize)
@@ -184,6 +189,14 @@ class PipedApiEngine : DownloadEngine {
                     if (bytesRead == -1) break
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
+
+                    if (downloadedBytes > maxDownloadBytes) {
+                        outputStream.close()
+                        outputFile.delete()
+                        emit(DownloadResult(song.id, DownloadStatus.FAILED,
+                            error = "Archivo demasiado grande para descargar (máx 250 MB)."))
+                        return@flow
+                    }
 
                     val now = System.currentTimeMillis()
                     if (now - lastEmitTime >= 300) {
@@ -199,7 +212,8 @@ class PipedApiEngine : DownloadEngine {
             }
 
             if (activeDownloads[song.id] != true) {
-                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "Cancelled"))
+                outputFile.delete()
+                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = CANCELLED_ERROR))
             } else if (downloadedBytes == 0L) {
                 emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "Servidor devolvió contenido vacío"))
                 outputFile.delete()
@@ -224,6 +238,8 @@ class PipedApiEngine : DownloadEngine {
                 ))
             }
         } catch (e: Exception) {
+            // No dejar parciales truncados en disco (p. ej. corte de red a mitad).
+            outputFile.delete()
             emit(DownloadResult(song.id, DownloadStatus.FAILED, error = e.message))
         } finally {
             activeDownloads.remove(song.id)
@@ -234,41 +250,47 @@ class PipedApiEngine : DownloadEngine {
         activeDownloads[songId] = false
     }
 
+    private fun invalidateInstance() {
+        activeUrl = null
+        instanceVerified = false
+    }
+
     private suspend fun resolveInstance(): String {
         if (instanceVerified && activeUrl != null) return activeUrl!!
-        val custom = PipedConfig.customInstanceUrl
-        if (custom != null && testInstance(custom)) {
-            activeUrl = custom
-            instanceVerified = true
-            return custom
+
+        // Public Piped instances shut down often, so the app ships without a
+        // hardcoded list and uses the instance configured in Settings.
+        val custom = RemoteConfig.pipedUrl
+            ?: throw RuntimeException(
+                "No hay instancia de Piped configurada. Añádela en ⚙ Ajustes > Instancia Piped."
+            )
+        if (activeUrl != null && activeUrl != custom) invalidateInstance()
+        if (!testInstance(custom)) {
+            invalidateInstance()
+            throw RuntimeException(
+                "No se pudo conectar con la instancia de Piped configurada ($custom). " +
+                "Verifica la URL o prueba con otra."
+            )
         }
-        if (activeUrl != null && testInstance(activeUrl!!)) {
-            instanceVerified = true
-            return activeUrl!!
-        }
-        for (url in defaultFallbacks) {
-            if (url == activeUrl) continue
-            if (testInstance(url)) {
-                activeUrl = url
-                instanceVerified = true
-                return url
-            }
-        }
-        throw RuntimeException(
-            if (custom != null)
-                "Error de conexi\u00F3n con $custom. Verifica la URL o intenta con otra."
-            else
-                "No hay servidores Piped disponibles. Usa la aplicaci\u00F3n de PC para descargar."
-        )
+        activeUrl = custom
+        instanceVerified = true
+        return custom
     }
 
     private suspend fun testInstance(url: String): Boolean {
         return try {
             val resp = httpClient.get("$url/streams/dQw4w9WgXcQ")
             if (resp.status.value !in 200..299) return false
-            // Check response body for shutdown/error markers
             val body = resp.bodyAsText()
             if (hasShutdownMarker(body)) return false
+            // A healthy instance answers with a stream payload; an "error" field
+            // with HTTP 200 means YouTube blocked that instance.
+            if (body.trimStart().startsWith("{")) {
+                val error = try {
+                    json.decodeFromString<kotlinx.serialization.json.JsonObject>(body)["error"]
+                } catch (_: Exception) { null }
+                if (error != null) return false
+            }
             true
         } catch (_: Exception) {
             false
@@ -300,17 +322,5 @@ class PipedApiEngine : DownloadEngine {
     private fun extractVideoId(url: String): String {
         return url.removePrefix("/watch?v=").takeIf { it.length == 11 }
             ?: url.takeLast(11)
-    }
-}
-
-private fun uniqueOutputFile(outputDir: String, baseName: String, extension: String): File {
-    val dir = File(outputDir)
-    val base = File(dir, "$baseName.$extension")
-    if (!base.exists()) return base
-    var n = 1
-    while (true) {
-        val candidate = File(dir, "$baseName ($n).$extension")
-        if (!candidate.exists()) return candidate
-        n++
     }
 }

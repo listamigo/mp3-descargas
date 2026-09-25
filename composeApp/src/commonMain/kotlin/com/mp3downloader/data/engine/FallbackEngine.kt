@@ -2,13 +2,25 @@ package com.mp3downloader.data.engine
 
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
+import com.mp3downloader.domain.service.AppLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
+/**
+ * @param beforeSearch hook run before every search. The Android wiring uses it
+ *   to warm up the remote host in the background without delaying the query.
+ * @param preferredForSearch engines to try first when [lastSearchEngine] has
+ *   not pinned pagination yet. Platform code decides this; kept as a hook so
+ *   this common class stays free of platform types.
+ */
 class FallbackEngine(
-    private val engines: List<DownloadEngine>
+    private val engines: List<DownloadEngine>,
+    private val beforeSearch: suspend () -> Unit = {},
+    private val preferredForSearch: () -> List<DownloadEngine> = { emptyList() }
 ) : DownloadEngine {
+
+    private val tag = "FallbackEngine"
 
     // Remembers the engine that handled the last successful search so that
     // subsequent "load more" pages come from the same source.
@@ -41,25 +53,38 @@ class FallbackEngine(
         return engine::class.simpleName == "RemoteServerEngine"
     }
 
+    /**
+     * Single ordering rule for search, stream resolution and download:
+     * 1. the engine that already answered, so "load more" keeps paging the same
+     *    source and the download comes from the backend the user is looking at;
+     * 2. engines the platform flagged as worth trying first;
+     * 3. the rest, in declaration order.
+     *
+     * Without step 1 on the download path every file paid a full Invidious
+     * timeout (~25s here) before reaching a working server.
+     */
+    private fun orderedEngines(): List<DownloadEngine> = buildList {
+        lastSearchEngine?.let { add(it) }
+        preferredForSearch().filter { it in engines && it !in this }.forEach { add(it) }
+        engines.filter { it !in this }.forEach { add(it) }
+    }
+
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         val errors = mutableListOf<String>()
-        // Prefer the engine that already succeeded for the previous page so
-        // pagination stays consistent across "load more" requests.
-        val ordered = if (lastSearchEngine != null) {
-            listOf(lastSearchEngine!!) + engines.filter { it !== lastSearchEngine }
-        } else {
-            engines
-        }
+        // Fire-and-forget: warms the remote host so the first download does not
+        // pay its cold start. Never blocks the query.
+        beforeSearch()
+        val ordered = orderedEngines()
         for ((i, engine) in ordered.withIndex()) {
-            android.util.Log.d("FallbackEngine", "search: trying engine[$i]=${engine::class.simpleName} offset=$offset")
+            AppLog.d(tag, "search: trying engine[$i]=${engine::class.simpleName} offset=$offset")
             val result = engine.search(query, offset)
             if (result.isSuccess) {
                 lastSearchEngine = engine
-                android.util.Log.d("FallbackEngine", "search: engine[$i] succeeded")
+                AppLog.d(tag, "search: engine[$i] succeeded")
                 return result
             }
             val err = result.exceptionOrNull()?.message ?: "Error desconocido"
-            android.util.Log.w("FallbackEngine", "search: engine[$i] failed: $err")
+            AppLog.w(tag, "search: engine[$i] failed: $err")
             errors.add(err)
         }
         return Result.failure(RuntimeException(
@@ -69,10 +94,18 @@ class FallbackEngine(
 
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
         val errors = mutableListOf<String>()
-        for (engine in engines) {
+        // Mismo criterio que search(): si la última búsqueda la respondió un
+        // motor, se consulta primero. Así la URL de audio sale de la misma
+        // fuente que los resultados que el usuario está viendo, en vez de
+        // saltar al primero de la lista.
+        val ordered = orderedEngines()
+        for ((i, engine) in ordered.withIndex()) {
+            AppLog.d(tag, "getAudioStreamUrl: trying engine[$i]=${engine::class.simpleName}")
             val result = engine.getAudioStreamUrl(song)
             if (result.isSuccess) return result
-            errors.add(result.exceptionOrNull()?.message ?: "Error desconocido")
+            val err = result.exceptionOrNull()?.message ?: "Error desconocido"
+            AppLog.w(tag, "getAudioStreamUrl: engine[$i] failed: $err")
+            errors.add(err)
         }
         return Result.failure(RuntimeException(
             "Todos los motores fallaron: ${errors.joinToString("; ")}"
@@ -81,10 +114,11 @@ class FallbackEngine(
 
     override fun download(song: Song, outputDir: String): Flow<DownloadResult> = flow {
         val errors = mutableListOf<String>()
+        var cancelled = false
 
         // Primera pasada: intentar cada motor una vez
         val attempts = mutableListOf<Pair<DownloadEngine, Int>>()
-        engines.forEachIndexed { idx, engine ->
+        orderedEngines().forEachIndexed { idx, engine ->
             // Primer intento
             attempts.add(engine to (idx + 1)) // +1 indica intento 1
         }
@@ -120,6 +154,11 @@ class FallbackEngine(
 
             if (succeeded) return@flow
 
+            if (errorMsg == CANCELLED_ERROR) {
+                cancelled = true
+                break
+            }
+
             if (finished) {
                 val logMsg = errorMsg ?: "Unknown error"
                 errors.add("${engine::class.simpleName}[intento $attemptNum]: $logMsg")
@@ -130,8 +169,7 @@ class FallbackEngine(
                 // Invidious/Piped (que probablemente también fallarán), esperamos
                 // 2 segundos y reintentamos el servidor propio.
                 if (isRemoteServerEngine(engine) && isTransientError(errorMsg)) {
-                    android.util.Log.w("FallbackEngine",
-                        "Error transitorio en RemoteServerEngine, reintentando...")
+                    AppLog.d(tag, "Error transitorio en RemoteServerEngine, reintentando...")
                     delay(2000)
 
                     var retryFinished = false
@@ -163,15 +201,27 @@ class FallbackEngine(
                     }
 
                     if (retrySucceeded) return@flow
+                    if (retryError == CANCELLED_ERROR) {
+                        cancelled = true
+                        break
+                    }
                     errors.add("${engine::class.simpleName}[reintento]: ${retryError ?: "Unknown"}")
-                    android.util.Log.w("FallbackEngine",
-                        "Reintento de RemoteServerEngine falló: ${retryError}")
+                    AppLog.w(tag, "Reintento de RemoteServerEngine falló: $retryError")
                 }
 
                 continue
             }
 
             errors.add("${engine::class.simpleName}: Download ended without completion or failure")
+        }
+
+        if (cancelled) {
+            emit(DownloadResult(
+                songId = song.id,
+                status = DownloadStatus.FAILED,
+                error = CANCELLED_ERROR
+            ))
+            return@flow
         }
 
         emit(DownloadResult(

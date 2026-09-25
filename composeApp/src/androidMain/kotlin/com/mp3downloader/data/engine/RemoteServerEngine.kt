@@ -23,10 +23,6 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.coroutineContext
 
-object ServerStatus {
-    var isOnline = false
-}
-
 @Serializable
 data class RemoteSearchItem(
     val id: String,
@@ -58,7 +54,7 @@ class RemoteServerEngine : DownloadEngine {
 
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {
         val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
-            "No hay servidor configurado. Ve a Ajustes > Servidor e ingresa la IP de tu PC."
+            "Sin servidor propio configurado (opcional)."
         ))
         return runCatching {
             val raw = httpClient.get("$server/api/search") {
@@ -89,7 +85,7 @@ class RemoteServerEngine : DownloadEngine {
 
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
         val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
-            "No hay servidor configurado."
+            "Sin servidor propio configurado (opcional)."
         ))
         if (!isValidYouTubeId(song.id)) {
             return Result.failure(RuntimeException("ID de video inválido."))
@@ -106,7 +102,7 @@ class RemoteServerEngine : DownloadEngine {
         val server = RemoteConfig.serverUrl
             ?: run {
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
-                    error = "No hay servidor configurado."))
+                    error = "Sin servidor propio configurado (opcional)."))
                 return@flow
             }
 
@@ -187,7 +183,8 @@ class RemoteServerEngine : DownloadEngine {
             inputStream.close()
 
             if (activeDownloads[song.id] != true) {
-                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "Cancelled"))
+                outputFile.delete()
+                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = CANCELLED_ERROR))
             } else if (downloadedBytes == 0L) {
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
                     error = "El servidor devolvió contenido vacío"))
@@ -218,6 +215,8 @@ class RemoteServerEngine : DownloadEngine {
                 ))
             }
         } catch (e: Exception) {
+            // No dejar parciales truncados en disco (p. ej. corte de red a mitad).
+            outputFile.delete()
             emit(DownloadResult(song.id, DownloadStatus.FAILED, error = e.message))
         } finally {
             activeDownloads.remove(song.id)
