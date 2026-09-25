@@ -327,6 +327,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     "po_script_ok": po_script_ok,
                     "yt_dlp_version": _get_ytdlp_version(),
                     "uptime": _get_uptime(),
+                    "build_commit": _get_build_commit(),
                     "client_health": get_client_health(),
                     "direct_path": direct_path_state(),
                 })
@@ -1336,6 +1337,22 @@ class APIHandler(BaseHTTPRequestHandler):
             super().handle_one_request()
         except (ConnectionError, TimeoutError, BrokenPipeError):
             pass
+
+
+def _get_build_commit() -> str:
+    """SHA corto del commit desplegado, o 'unknown'.
+
+    Railway y Render inyectan el SHA del commit en el entorno, así que esto
+    dice sin ambigüedad qué código está corriendo cada despliegue. Se añadió
+    porque `uptime` miente: lee /proc/uptime, que es el uptime del HOST y no
+    del proceso, así que no cambia con un redeploy y no sirve para distinguir
+    un despliegue viejo de uno nuevo.
+    """
+    for var in ("RAILWAY_GIT_COMMIT_SHA", "RENDER_GIT_COMMIT", "GIT_SHA"):
+        sha = os.environ.get(var, "").strip()
+        if sha:
+            return sha[:7]
+    return "unknown"
 
 
 def _get_uptime() -> str:
