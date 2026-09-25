@@ -47,6 +47,65 @@ Commits de esta tanda:
 - `5c039ea` — `build_commit` en `/api/health`.
 - `6a75bb1` — servidor por defecto pasa de Render a Railway.
 
+### Por qué no hay ruta "sin servidor propio" (investigado el 2026-09-25, no repetir)
+
+Petición original del usuario: que la app funcionase **sin depender de su propio
+servidor**, gratis, con instancias públicas. Se investigó a fondo. **No es
+viable para descargas completas**, y el motivo es concreto, para que no se vuelva
+a perder tiempo en esto.
+
+**1. Las instancias públicas están todas bloqueadas.** YouTube bloquea por IP, y
+todas las instancias públicas viven en IPs de datacenter.
+
+- Invidious: el directorio oficial (`api.invidious.io/instances.json`) sigue
+  dando **una sola instancia con API**, `invidious.f5.si`. Búsqueda 200 en 1,4 s,
+  pero la descarga está muerta: HTTP 500
+  `Error while communicating with Invidious companion`. Las otras 10 (3 de ellas
+  con API "desconocida") dan 403, 404 o no resuelven. **0/11 sirve para descargar.**
+- Piped: la lista de `piped.video/api/v1/instances` está caída (devuelve el HTML
+  del frontend). Se probó la lista actual del repo de documentación de Piped
+  (15 instancias): 13 muertos, y `api.piped.private.coffee`, que responde 200,
+  está bloqueada por YouTube: `SignInConfirmNotBotException: YouTube probably
+  temporarily blocked anonymous watching`. **0/15 sirve para descargar.**
+
+Por eso la lista de Piped se quitó en `bbf8130`: no era una INSTANCE[],
+estaban las 5 muertas.
+
+**2. NewPipeExtractor extrae, pero no se puede descargar el audio.** Probado
+`v0.26.5` (JitPack, 1.981 estrellas, commit 4 días antes) desde IP de ISP y
+desde el móvil:
+
+- Búsqueda por HTML: **muerta**. YouTube ya no embebe `initialData` en el HTML
+  de `/results` (comprobado: 0 apariciones, ni desde el móvil), y
+  `YoutubeSearchExtractor` depende de eso.
+- Extracción con el cliente InnerTube **iOS**: **funciona**. `playability=OK`,
+  5 flujos de audio, 1,3 s, **sin PO token**, y devuelve URLs reales de
+  `googlevideo.com`. Los otros dos clientes no: android exige PO token
+  (`NullPointerException: androidPoTokenResult is null`) y web-embedded responde
+  `ERROR: This video is unavailable`.
+- **Pero la descarga es imposible.** El CDN de googlevideo impone una **cuota
+  anónima de ~500-700 KB por sesión de cliente**:
+
+  | Prueba | Resultado |
+  |---|---|
+  | `Range: 0-700001` con URL fresca | 206, 700 KB ✓ |
+  | Rango siguiente en la misma URL | 403 |
+  | Trozo nuevo pidiendo URL nueva | 403 |
+  | `Range: 0-5417352` (fichero entero) | 403 |
+  | Fichero entero tras 75 s de espera | 403 |
+
+  Una pista de 5 min son ~5,4 MB. **En el mejor caso salen ~700 KB**, o sea un
+  fragmento, no un MP3 completo. Ni reextraer ni esperar reinician la cuota.
+
+**Conclusión:** esa cuota es justo lo que levanta el PO token, que es lo que hace
+funcionar Railway. Un PO token en el móvil exigiría un WebView ejecutando el JS
+de YouTube, que es el mismo PO script que ya vive en el servidor. Sin él no hay
+descargas completas.
+
+**Decisión tomada:** el servidor propio (Railway) es la única ruta que aguanta.
+No añadir NewPipeExtractor ni listas de instancias: producirían previews de
+700 KB y además Engordarían la APK (Rhino) sin dar descargas completas.
+
 **Aviso importante sobre `uptime`:** el campo `uptime` de `/api/health` miente.
 Lee `/proc/uptime`, que es el uptime del **host**, no el del proceso, así que no
 cambia con un redeploy. Por eso Render reportaba `161d` y Railway `200d` con
