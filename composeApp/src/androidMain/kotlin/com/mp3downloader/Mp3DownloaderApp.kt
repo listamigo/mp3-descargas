@@ -3,6 +3,11 @@ package com.mp3downloader
 import android.app.Application
 import com.mp3downloader.data.storage.AndroidStorage
 import com.mp3downloader.di.sharedModules
+import com.mp3downloader.domain.service.RemoteHealth
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.koin.core.context.startKoin
 import java.io.File
 
@@ -11,6 +16,8 @@ class Mp3DownloaderApp : Application() {
         lateinit var instance: Mp3DownloaderApp
             private set
     }
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
@@ -21,5 +28,8 @@ class Mp3DownloaderApp : Application() {
         startKoin {
             modules(sharedModules)
         }
+        // Free hosting sleeps when idle, so wake it while the user is still
+        // typing instead of letting the first download pay the cold start.
+        appScope.launch { RemoteHealth.refresh() }
     }
 }

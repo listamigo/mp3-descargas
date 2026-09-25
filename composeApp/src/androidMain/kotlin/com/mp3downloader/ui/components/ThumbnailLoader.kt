@@ -47,8 +47,22 @@ actual fun rememberThumbnailBitmap(url: String?): ImageBitmap? {
         if (!isSafeHttpsUrl(url)) return@LaunchedEffect
 
         try {
+            val response = thumbnailClient.get(url)
+            // Las instancias de Invidious/Piped sirven las miniaturas con su
+            // propio proxy y, cuando ese proxy cae, contestan HTTP 200 con una
+            // página HTML en vez de una imagen. BitmapFactory no la decodifica
+            // y el fallo era totalmente silencioso (solo se veía el icono
+            // placeholder), así que se descarta explícitamente y se registra.
+            val contentType = response.headers["Content-Type"].orEmpty()
+            if (!contentType.startsWith("image/", ignoreCase = true)) {
+                android.util.Log.w(
+                    "ThumbnailLoader",
+                    "descartada respuesta no-imagen ($contentType) de $url"
+                )
+                return@LaunchedEffect
+            }
             val bytes = withContext(Dispatchers.IO) {
-                val channel = thumbnailClient.get(url).bodyAsChannel()
+                val channel = response.bodyAsChannel()
                 val buffer = java.io.ByteArrayOutputStream()
                 val buf = ByteArray(8192)
                 var total = 0
@@ -66,8 +80,9 @@ actual fun rememberThumbnailBitmap(url: String?): ImageBitmap? {
                 thumbnailCache.put(url, it)
                 bitmap = it
             }
-        } catch (_: Exception) {
-            // Keep the placeholder icon on any failure.
+        } catch (e: Exception) {
+            // Keep the placeholder icon on any failure, but make it diagnosable.
+            android.util.Log.w("ThumbnailLoader", "fallo al cargar $url: ${e.message}")
         }
     }
 

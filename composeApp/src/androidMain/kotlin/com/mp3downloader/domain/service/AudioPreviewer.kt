@@ -18,7 +18,12 @@ actual class AudioPreviewer {
         PAUSED
     }
 
-    actual fun play(url: String, onError: ((String) -> Unit)?, onPlaying: (() -> Unit)?) {
+    actual fun play(
+        url: String,
+        onError: ((String) -> Unit)?,
+        onPlaying: (() -> Unit)?,
+        onCompletion: (() -> Unit)?
+    ) {
         // Tear down any previous player first (this also bumps the generation
         // so its pending callbacks are ignored), then take a fresh generation
         // for THIS player.
@@ -64,6 +69,7 @@ actual class AudioPreviewer {
                     }
                 }
                 state = State.IDLE
+                onCompletion?.invoke()
             }
             mp.setOnErrorListener { _, what, extra ->
                 synchronized(lock) {

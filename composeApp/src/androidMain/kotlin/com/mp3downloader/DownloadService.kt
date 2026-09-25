@@ -1,17 +1,21 @@
 package com.mp3downloader
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 
 /**
  * Foreground Service que mantiene la app viva durante descargas largas.
@@ -63,6 +67,23 @@ class DownloadService : Service() {
         @Synchronized
         fun getActiveCount(): Int = activeCount
 
+        private fun canPostNotifications(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+            return ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun postNotification(context: Context, id: Int, notification: Notification) {
+            if (!canPostNotifications(context)) {
+                Log.w(TAG, "Notificación omitida: permiso POST_NOTIFICATIONS no concedido")
+                return
+            }
+            NotificationManagerCompat.from(context).notify(id, notification)
+        }
+
         /** Muestra una notificación de descarga completada en la barra de estado. */
         fun showCompleteNotification(context: Context, title: String) {
             val notification = NotificationCompat.Builder(context, CHANNEL_COMPLETE_ID)
@@ -72,10 +93,7 @@ class DownloadService : Service() {
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .build()
-            NotificationManagerCompat.from(context).notify(
-                NOTIFICATION_COMPLETE_ID + title.hashCode(),
-                notification
-            )
+            postNotification(context, NOTIFICATION_COMPLETE_ID + title.hashCode(), notification)
         }
 
         /** Muestra una notificación de descarga fallida en la barra de estado. */
@@ -87,10 +105,7 @@ class DownloadService : Service() {
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .build()
-            NotificationManagerCompat.from(context).notify(
-                NOTIFICATION_COMPLETE_ID + title.hashCode(),
-                notification
-            )
+            postNotification(context, NOTIFICATION_COMPLETE_ID + title.hashCode(), notification)
         }
     }
 
@@ -117,9 +132,7 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: activeCount=$activeCount")
         // Actualizar notificación con conteo actual
-        val notification = buildNotification(activeCount)
-        val manager = NotificationManagerCompat.from(this)
-        manager.notify(NOTIFICATION_ID, notification)
+        postNotification(this, NOTIFICATION_ID, buildNotification(activeCount))
         return START_STICKY
     }
 
@@ -207,8 +220,6 @@ class DownloadService : Service() {
      * o Activity cuando cambie el estado de descargas.
      */
     fun updateNotification(activeDownloads: Int) {
-        val notification = buildNotification(activeDownloads)
-        val manager = NotificationManagerCompat.from(this)
-        manager.notify(NOTIFICATION_ID, notification)
+        postNotification(this, NOTIFICATION_ID, buildNotification(activeDownloads))
     }
 }

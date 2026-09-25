@@ -1,6 +1,8 @@
 package com.mp3downloader.domain.service
 
 import java.awt.Desktop
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.io.File
 
 actual fun openInFileManager(path: String) {
@@ -22,4 +24,11 @@ actual fun saveToPublicDownloads(sourcePath: String, fileName: String): String? 
         sourceFile.copyTo(dest, overwrite = true)
         dest.absolutePath
     } catch (_: Exception) { null }
+}
+
+actual fun copyTextToClipboard(text: String) {
+    try {
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+        clipboard.setContents(StringSelection(text), null)
+    } catch (_: Exception) {}
 }

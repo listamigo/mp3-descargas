@@ -11,7 +11,12 @@ actual class AudioPreviewer {
     private var clip: Clip? = null
     private var thread: Thread? = null
 
-    actual fun play(url: String, onError: ((String) -> Unit)?) {
+    actual fun play(
+        url: String,
+        onError: ((String) -> Unit)?,
+        onPlaying: (() -> Unit)?,
+        onCompletion: (() -> Unit)?
+    ) {
         stop()
         thread = Thread {
             try {
@@ -41,6 +46,10 @@ actual class AudioPreviewer {
                     clip = newClip
                     newClip.addLineListener { event ->
                         if (event.type == LineEvent.Type.STOP) {
+                            if (newClip.getFramePosition() == newClip.getFrameLength()) {
+                                // Natural completion
+                                onCompletion?.invoke()
+                            }
                             newClip.close()
                             if (clip == newClip) clip = null
                             tempFile.delete()

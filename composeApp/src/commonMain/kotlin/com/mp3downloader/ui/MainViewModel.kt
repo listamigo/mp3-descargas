@@ -2,6 +2,7 @@ package com.mp3downloader.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mp3downloader.data.engine.CANCELLED_ERROR
 import com.mp3downloader.data.engine.SEARCH_PAGE_SIZE
 import com.mp3downloader.data.repository.HistoryRepository
 import com.mp3downloader.domain.model.DownloadStatus
@@ -158,10 +159,17 @@ class MainViewModel(
             // If URL is cached, play from cache
             val cachedUrl = audioUrlCache.get(song.id)
             if (cachedUrl != null) {
-                audioPreviewer.play(cachedUrl, onError = { errorMsg ->
-                    _previewingSongId.value = null
-                    showSnackbar("Error de reproducción: $errorMsg")
-                })
+                audioPreviewer.play(
+                    cachedUrl,
+                    onError = { errorMsg ->
+                        _previewingSongId.value = null
+                        showSnackbar("Error de reproducción: $errorMsg")
+                    },
+                    onCompletion = {
+                        _previewingSongId.value = null
+                        _previewPaused.value = false
+                    }
+                )
                 _previewingSongId.value = song.id
                 _previewPaused.value = false
                 return@launch
@@ -182,6 +190,10 @@ class MainViewModel(
                         },
                         onPlaying = {
                             _previewLoading.value = null
+                        },
+                        onCompletion = {
+                            _previewingSongId.value = null
+                            _previewPaused.value = false
                         }
                     )
                     _previewingSongId.value = song.id
@@ -226,7 +238,13 @@ class MainViewModel(
             repository.search(query)
                 .onSuccess { songs ->
                     _searchResults.value = songs
-                    _hasMore.value = songs.size >= SEARCH_PAGE_SIZE
+                    // El engine ya descarta de cada página los resultados que no
+                    // son descargables (Invidious devuelve también canales y
+                    // playlists, así que una página de 20 crudos llega con 19).
+                    // Comparar contra SEARCH_PAGE_SIZE hacía que el botón
+                    // "Cargar más" nunca apareciera. Se ofrece mientras la página
+                    // traiga algo nuevo; una página vacía lo oculta.
+                    _hasMore.value = songs.isNotEmpty()
                     if (songs.isEmpty()) {
                         showSnackbar("Sin resultados para \"$query\"")
                     }
@@ -263,7 +281,9 @@ class MainViewModel(
                         val newSongs = songs.filter { it.id !in existingIds }
                         _searchResults.value = _searchResults.value + newSongs
                         currentOffset = offset
-                        _hasMore.value = newSongs.isNotEmpty() && songs.size >= SEARCH_PAGE_SIZE
+                        // Mismo criterio que en search(): si la página trajo
+                        // resultados nuevos se ofrece la siguiente.
+                        _hasMore.value = newSongs.isNotEmpty()
                     } else {
                         _hasMore.value = false
                     }
@@ -330,6 +350,7 @@ class MainViewModel(
                             _downloadCompleteEvent.emit(DownloadCompleteEvent(song.title))
                         } else if (result.status == DownloadStatus.FAILED) {
                             val errMsg = result.error ?: "Error desconocido"
+                            if (errMsg == CANCELLED_ERROR) return@collect
                             showSnackbar(
                                 message = "Descarga fallida: $errMsg",
                                 actionLabel = "Copiar",
@@ -363,7 +384,7 @@ class MainViewModel(
     fun cancelDownload(songId: String) {
         viewModelScope.launch {
             repository.cancelDownload(songId)
-            updateTask(songId, status = DownloadStatus.FAILED, error = "Cancelado")
+            updateTask(songId, status = DownloadStatus.FAILED, error = CANCELLED_ERROR)
             showSnackbar("Descarga cancelada")
         }
     }
@@ -413,7 +434,7 @@ class MainViewModel(
         }
     }
 
-    private fun showSnackbar(message: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
+    fun showSnackbar(message: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
         val short = if (message.length > 120) message.take(120) + "..." else message
         viewModelScope.launch {
             _snackbarEvent.emit(SnackbarEvent(short, actionLabel, action))

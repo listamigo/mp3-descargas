@@ -1,14 +1,10 @@
 package com.mp3downloader.ui.screens
 
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,6 +31,8 @@ import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
@@ -90,18 +88,18 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.sin
 import kotlin.random.Random
 import com.mp3downloader.data.engine.RemoteConfig
+import com.mp3downloader.data.storage.PlatformWallpaper
+import com.mp3downloader.data.storage.rememberWallpaperPicker
 import com.mp3downloader.data.storage.saveAppearance
 import com.mp3downloader.data.storage.persistWallpaperImage
 import com.mp3downloader.domain.model.DownloadStatus
@@ -180,9 +178,13 @@ fun MainScreen(viewModel: MainViewModel) {
     if (showSettings) {
         SettingsDialog(
             currentUrl = RemoteConfig.serverUrl ?: "",
+            currentInvidiousUrl = RemoteConfig.invidiousUrl ?: "",
+            currentPipedUrl = RemoteConfig.pipedUrl ?: "",
             onDismiss = { showSettings = false },
-            onSave = { url ->
-                RemoteConfig.serverUrl = url.ifBlank { null }
+            onSave = { serverUrl, invidiousUrl, pipedUrl ->
+                RemoteConfig.serverUrl = serverUrl.ifBlank { null }
+                RemoteConfig.invidiousUrl = invidiousUrl.ifBlank { null }
+                RemoteConfig.pipedUrl = pipedUrl.ifBlank { null }
                 showSettings = false
             }
         )
@@ -338,32 +340,11 @@ fun MainScreen(viewModel: MainViewModel) {
 
 @Composable
 private fun WallpaperOverlay(uri: String, opacity: Float) {
-    val context = LocalContext.current
-    val bitmap = remember(uri) {
-        try {
-            val bmp = if (uri.startsWith("content://")) {
-                context.contentResolver.openInputStream(Uri.parse(uri))
-                    ?.use { android.graphics.BitmapFactory.decodeStream(it) }
-            } else {
-                android.graphics.BitmapFactory.decodeFile(uri)
-                    ?: context.contentResolver.openInputStream(Uri.parse(uri))
-                        ?.use { android.graphics.BitmapFactory.decodeStream(it) }
-            }
-            bmp?.asImageBitmap()
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    if (bitmap != null) {
-        Image(
-            bitmap = bitmap,
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
-            alpha = opacity
-        )
-    }
+    PlatformWallpaper(
+        uri = uri,
+        opacity = opacity,
+        modifier = Modifier.fillMaxSize()
+    )
 }
 
 @Composable
@@ -929,23 +910,24 @@ private fun SectionHeader(title: String) {
 @Composable
 private fun SettingsDialog(
     currentUrl: String,
+    currentInvidiousUrl: String,
+    currentPipedUrl: String,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit
+    onSave: (String, String, String) -> Unit
 ) {
     var url by remember { mutableStateOf(currentUrl.ifBlank { "" }) }
+    var invidiousUrl by remember { mutableStateOf(currentInvidiousUrl) }
+    var pipedUrl by remember { mutableStateOf(currentPipedUrl) }
+    var advancedOpen by remember { mutableStateOf(false) }
     val appearance by ThemeManager.settings.collectAsState()
     var selectedTheme by remember { mutableStateOf(appearance.theme) }
     var isDarkMode by remember { mutableStateOf(appearance.isDarkMode) }
     var wallpaperOpacity by remember { mutableFloatStateOf(appearance.wallpaperOpacity) }
 
-    val wallpaperPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let {
-            val persisted = persistWallpaperImage(it.toString()) ?: it.toString()
-            ThemeManager.updateWallpaper(persisted)
-            saveAppearance(ThemeManager.settings.value)
-        }
+    val launchWallpaperPicker = rememberWallpaperPicker { uri ->
+        val persisted = persistWallpaperImage(uri) ?: uri
+        ThemeManager.updateWallpaper(persisted)
+        saveAppearance(ThemeManager.settings.value)
     }
 
     AlertDialog(
@@ -1071,7 +1053,7 @@ private fun SettingsDialog(
                     Card(
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { wallpaperPicker.launch("image/*") },
+                            .clickable { launchWallpaperPicker() },
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
@@ -1167,38 +1149,107 @@ private fun SettingsDialog(
 
                 Spacer(Modifier.height(16.dp))
 
-                // ── Server URL section ──
-                Text(
-                    "Servidor",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("URL del servidor") },
-                    placeholder = { Text("https://mp3-descargas-1.onrender.com") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                        cursorColor = MaterialTheme.colorScheme.primary,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                // ── Advanced settings: server URLs ──
+                // The app ships with a working server baked in, so these stay
+                // folded away by default. They matter only for self-hosting or
+                // pointing at a backup host, not for everyday use.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { advancedOpen = !advancedOpen }
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
                     )
-                )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "Ajustes avanzados",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        if (advancedOpen) Icons.Default.KeyboardArrowUp
+                        else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (advancedOpen) "Ocultar" else "Mostrar",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Motor alternativo: si el servidor falla, usa Invidious/Piped",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
+                if (advancedOpen) {
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        label = { Text("Servidor de descarga") },
+                        placeholder = { Text("Vacío = servidor incluido") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        )
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = invidiousUrl,
+                        onValueChange = { invidiousUrl = it },
+                        label = { Text("Instancia Invidious") },
+                        placeholder = { Text("Vacío = usar la instancia por defecto") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        )
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = pipedUrl,
+                        onValueChange = { pipedUrl = it },
+                        label = { Text("Instancia Piped") },
+                        placeholder = { Text("Vacío = usar la instancia por defecto") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                        )
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Solo si autoalojas el servidor o quieres usar una copia de respaldo. " +
+                            "Déjalo vacío para usar el servidor incluido en la app.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
 
                 Spacer(Modifier.height(20.dp))
 
@@ -1221,7 +1272,7 @@ private fun SettingsDialog(
             TextButton(
                 onClick = {
                     saveAppearance(ThemeManager.settings.value)
-                    onSave(url)
+                    onSave(url, invidiousUrl, pipedUrl)
                 },
                 shape = RoundedCornerShape(12.dp)
             ) {

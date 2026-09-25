@@ -1,5 +1,7 @@
 package com.mp3downloader.data.storage
 
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import com.mp3downloader.ui.theme.AppearanceSettings
 import java.io.File
 
@@ -51,3 +53,10 @@ actual fun loadAppearance(): AppearanceSettings {
 }
 
 actual fun persistWallpaperImage(sourceUri: String): String? = sourceUri
+
+@Composable
+actual fun PlatformWallpaper(uri: String, opacity: Float, modifier: Modifier) {
+}
+
+@Composable
+actual fun rememberWallpaperPicker(onPicked: (String) -> Unit): () -> Unit = { }

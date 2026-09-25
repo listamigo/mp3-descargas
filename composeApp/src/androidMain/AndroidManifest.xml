@@ -20,6 +20,8 @@
     <!-- Notificaciones: API 33+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- (RECORD_AUDIO removido — se desactivó búsqueda por voz) -->
+
     <application
         android:name=".Mp3DownloaderApp"
         android:allowBackup="true"
