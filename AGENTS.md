@@ -213,12 +213,13 @@ Verificación: [Cómo confirmamos que funciona]
 ### Temas Disponibles (Android/KMP)
 | Tema | Clave | Fondo | Acento | Paleta |
 |---|---|---|---|---|
-| Nocturno (default) | `DARK` | `#0D0D0D` | `#1DB954` verde Spotify |
-| Claro | `LIGHT` | `#F8FAFE` | `#1565C0` azul material |
-| Neón | `NEON` | `#0A0A14` | `#FF006E` rosa neón |
-| Medianoche | `MIDNIGHT` | `#0B0E17` | `#6C63FF` índigo |
-| Vidrio | `GLASS` | `#0E0E14` | `#CE93D8` púrpura |
-| Sakura | `SAKURA` | `#0E0A10` | `#E91E63` rosa |
+| Nocturno (default) | `DARK` | `#0D0D0D` | `#E63946` rojo vibrante |
+| Claro | `LIGHT` | `#FFFFFF` | `#D42B3A` rojo claro |
+| Neón | `NEON` | `#0A0A14` | `#8C60C8` violeta |
+| Medianoche | `MIDNIGHT` | `#0B0E17` | `#3578C8` azul acero |
+| Vidrio | `GLASS` | `#121212` | `#7860C8` púrpura lavanda |
+| Sakura | `SAKURA` | `#1A1218` | `#C86080` rosa cerezo |
+| Verde | `VERDE` | `#0A0A0A` | `#00CC6A` verde esmeralda |
 
 Todos los temas oscuros por defecto. Toggle modo claro/oscuro disponible en Configuración.
 Persistencia: SharedPreferences (Android) / JSON (Desktop) en `~/.mp3downloader/appearance.json`.

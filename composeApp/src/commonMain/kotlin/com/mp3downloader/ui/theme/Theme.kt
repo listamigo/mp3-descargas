@@ -13,54 +13,55 @@ enum class AppTheme(val label: String, val icon: String) {
     NEON("Neón", "bolt"),
     MIDNIGHT("Medianoche", "star"),
     GLASS("Vidrio", "glass"),
-    SAKURA("Sakura", "flower")
+    SAKURA("Sakura", "flower"),
+    VERDE("Verde", "leaf")
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  DARK  —  Rojo Granate Intenso (ladrillo profundo, ni pastel ni vibrante)
+//  DARK  —  Rojo Vibrante (coincide con el logo rojo de la app)
 // ══════════════════════════════════════════════════════════════════════════
-private val DarkPrimary      = Color(0xFFA63D2A)
+private val DarkPrimary      = Color(0xFFE63946)
 private val DarkOnPrimary    = Color.White
-private val DarkContainer    = Color(0xFF3D1008)
-private val DarkOnContainer  = Color(0xFFFFD4C4)
-private val DarkSecondary      = Color(0xFFA0A0A0)
+private val DarkContainer    = Color(0xFF3D0A10)
+private val DarkOnContainer  = Color(0xFFFFD4D4)
+private val DarkSecondary      = Color(0xFFB0B0B0)
 private val DarkOnSecondary    = Color.Black
 private val DarkSecondaryContainer = Color(0xFF2D2D2D)
-private val DarkBackground   = Color(0xFF121212)
+private val DarkBackground   = Color(0xFF0D0D0D)
 private val DarkOnBackground = Color(0xFFE1E1E1)
-private val DarkSurface      = Color(0xFF1E1E1E)
+private val DarkSurface      = Color(0xFF1A1A1A)
 private val DarkOnSurface    = Color(0xFFE1E1E1)
-private val DarkSurfaceVariant    = Color(0xFF282828)
+private val DarkSurfaceVariant    = Color(0xFF252525)
 private val DarkOnSurfaceVariant  = Color(0xFFB3B3B3)
-private val DarkOutline      = Color(0xFF404040)
-private val DarkOutlineVariant    = Color(0xFF333333)
+private val DarkOutline      = Color(0xFF3A3A3A)
+private val DarkOutlineVariant    = Color(0xFF2E2E2E)
 private val DarkError        = Color(0xFFE74C3C)
 private val DarkOnError      = Color.White
 private val DarkErrorContainer    = Color(0xFF3D1111)
-private val DarkTertiary     = Color(0xFF4FC3B7)
+private val DarkTertiary     = Color(0xFFCF8A65)
 
 // ══════════════════════════════════════════════════════════════════════════
-//  LIGHT  —  Burnt Sienna Intenso (ocre tostado profundo)
+//  LIGHT  —  Rojo Claro Vibrante (coincide con el logo rojo de la app)
 // ══════════════════════════════════════════════════════════════════════════
-private val LightPrimary      = Color(0xFFC94A20)
+private val LightPrimary      = Color(0xFFD42B3A)
 private val LightOnPrimary    = Color.White
-private val LightContainer    = Color(0xFFFFE0CC)
-private val LightOnContainer  = Color(0xFF3D1A0A)
-private val LightSecondary      = Color(0xFF757575)
+private val LightContainer    = Color(0xFFFFD6D9)
+private val LightOnContainer  = Color(0xFF3D0A0E)
+private val LightSecondary      = Color(0xFF6E6E6E)
 private val LightOnSecondary    = Color.White
 private val LightSecondaryContainer = Color(0xFFE8E8E8)
 private val LightBackground   = Color(0xFFFFFFFF)
 private val LightOnBackground = Color(0xFF1A1A1A)
-private val LightSurface      = Color(0xFFF7F5F3)
+private val LightSurface      = Color(0xFFFDF8F7)
 private val LightOnSurface    = Color(0xFF1A1A1A)
-private val LightSurfaceVariant    = Color(0xFFEDE8E4)
+private val LightSurfaceVariant    = Color(0xFFF0E8E6)
 private val LightOnSurfaceVariant  = Color(0xFF666666)
 private val LightOutline      = Color(0xFFCCCCCC)
 private val LightOutlineVariant    = Color(0xFFE0E0E0)
 private val LightError        = Color(0xFFD32F2F)
 private val LightOnError      = Color.White
 private val LightErrorContainer    = Color(0xFFFFDAD6)
-private val LightTertiary     = Color(0xFF3D8C7A)
+private val LightTertiary     = Color(0xFFA0522D)
 
 // ══════════════════════════════════════════════════════════════════════════
 //  NEON  —  Deep Violet (violeta intenso)
@@ -153,6 +154,29 @@ private val SakuraError        = Color(0xFFCF6679)
 private val SakuraOnError      = Color.Black
 private val SakuraErrorContainer    = Color(0xFF3D0020)
 private val SakuraTertiary     = Color(0xFF7CC4A8)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  VERDE  —  Verde Vibrante (verde esmeralda intenso)
+// ══════════════════════════════════════════════════════════════════════════
+private val VerdePrimary      = Color(0xFF00CC6A)
+private val VerdeOnPrimary    = Color.White
+private val VerdeContainer    = Color(0xFF003D1A)
+private val VerdeOnContainer  = Color(0xFFB3FFD6)
+private val VerdeSecondary      = Color(0xFF00CFFF)
+private val VerdeOnSecondary    = Color.Black
+private val VerdeSecondaryContainer = Color(0xFF002A33)
+private val VerdeBackground   = Color(0xFF0A0A0A)
+private val VerdeOnBackground = Color(0xFFE1E1E1)
+private val VerdeSurface      = Color(0xFF121A14)
+private val VerdeOnSurface    = Color(0xFFE1E1E1)
+private val VerdeSurfaceVariant    = Color(0xFF1E2A20)
+private val VerdeOnSurfaceVariant  = Color(0xFFA0B0A5)
+private val VerdeOutline      = Color(0xFF2A3A2E)
+private val VerdeOutlineVariant    = Color(0xFF1E2A20)
+private val VerdeError        = Color(0xFFCF6679)
+private val VerdeOnError      = Color.Black
+private val VerdeErrorContainer    = Color(0xFF3D001A)
+private val VerdeTertiary     = Color(0xFFFFD700)
 
 // ══════════════════════════════════════════════════════════════════════════
 //  Color Schemes
@@ -290,6 +314,28 @@ val SakuraColorScheme = darkColorScheme(
     tertiary = SakuraTertiary
 )
 
+val VerdeColorScheme = darkColorScheme(
+    primary = VerdePrimary,
+    onPrimary = VerdeOnPrimary,
+    primaryContainer = VerdeContainer,
+    onPrimaryContainer = VerdeOnContainer,
+    secondary = VerdeSecondary,
+    onSecondary = VerdeOnSecondary,
+    secondaryContainer = VerdeSecondaryContainer,
+    background = VerdeBackground,
+    onBackground = VerdeOnBackground,
+    surface = VerdeSurface,
+    onSurface = VerdeOnSurface,
+    surfaceVariant = VerdeSurfaceVariant,
+    onSurfaceVariant = VerdeOnSurfaceVariant,
+    outline = VerdeOutline,
+    outlineVariant = VerdeOutlineVariant,
+    error = VerdeError,
+    onError = VerdeOnError,
+    errorContainer = VerdeErrorContainer,
+    tertiary = VerdeTertiary
+)
+
 // ── Theme resolver ─────────────────────────────────────────────────────
 
 fun colorSchemeFor(theme: AppTheme, isDark: Boolean) = when (theme) {
@@ -299,6 +345,7 @@ fun colorSchemeFor(theme: AppTheme, isDark: Boolean) = when (theme) {
     AppTheme.MIDNIGHT -> MidnightColorScheme
     AppTheme.GLASS -> GlassColorScheme
     AppTheme.SAKURA -> SakuraColorScheme
+    AppTheme.VERDE -> VerdeColorScheme
 }
 
 @Composable

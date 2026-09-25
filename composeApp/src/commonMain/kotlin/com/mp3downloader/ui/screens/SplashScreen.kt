@@ -20,8 +20,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val SplashRed = Color(0xFFFF0000)
-private val SplashBg = Color(0xFF121212)
+private val SplashRed = Color(0xFFE63946)
+private val SplashBg = Color(0xFF0D0D0D)
 private val SplashWhite = Color(0xFFFFFFFF)
 
 @Composable
