@@ -19,5 +19,10 @@ data class DownloadTask(
     /** Qué se pidió al servidor: MP3 o MP4. */
     val media: MediaKind = MediaKind.AUDIO,
     /** Altura del vídeo en píxeles; 0 cuando [media] es [MediaKind.AUDIO]. */
-    val quality: Int = 0
+    val quality: Int = 0,
+    /**
+     * Altura que trae el fichero de verdad, si el servidor la manda. Si es
+     * menor que [quality], la etiqueta lo enseña en vez de prometer lo pedido.
+     */
+    val deliveredHeight: Int = 0
 )

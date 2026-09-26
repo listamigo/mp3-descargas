@@ -291,7 +291,15 @@ private fun statusText(task: DownloadTask): String = when (task.status) {
  * la calidad pedida, para no confundirlo con una descarga de audio.
  */
 private fun formatLabel(task: DownloadTask): String? = when (task.media) {
-    MediaKind.VIDEO -> if (task.quality > 0) "MP4 ${task.quality}p" else "MP4"
+    MediaKind.VIDEO -> when {
+        // Lo que hay en el disco manda: si el servidor entrega menos de lo
+        // pedido, se dice eso y no "1080p" sobre un 360p.
+        task.deliveredHeight > 0 && task.deliveredHeight < task.quality ->
+            "MP4 ${task.deliveredHeight}p"
+        task.quality > 0 -> "MP4 ${task.quality}p"
+        task.deliveredHeight > 0 -> "MP4 ${task.deliveredHeight}p"
+        else -> "MP4"
+    }
     MediaKind.AUDIO -> null
 }
 

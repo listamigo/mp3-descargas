@@ -482,6 +482,28 @@ class APIHandler(BaseHTTPRequestHandler):
         suffix = f"_q{quality}" if quality else ""
         return os.path.join(self.DOWNLOAD_CACHE_DIR, f"{safe_id}{suffix}{ext}")
 
+    @staticmethod
+    def _video_dimensions(path: str) -> tuple[int, int] | None:
+        """Resolución REAL del MP4 ya descargado, o None si no se puede leer.
+
+        Se mide el fichero, no lo que se pidió. Pedir 1080p y servir 360p sin
+        decir nada era el defecto de esta ruta: el selector de formatos cae a
+        su último término cuando no hay formatos altos y ahí no hay forma de
+        saber qué se pidió. Con la medida, el servidor manda la verdad en una
+        cabecera y el cliente etiqueta lo que realmente trae.
+        """
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height",
+                 "-of", "csv=p=0:s=x", path],
+                capture_output=True, text=True, timeout=15,
+            )
+            w, _, h = proc.stdout.strip().partition("x")
+            return int(w), int(h)
+        except Exception:
+            return None
+
     def _serve_file(self, path: str, content_type: str, video_id: str) -> bool:
         """Sirve un fichero ya descargado con Content-Length real.
 
@@ -500,6 +522,11 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(file_size))
             self.send_header("Cache-Control", "public, max-age=3600")
             self.send_header("X-Video-Id", video_id)
+            dims = (self._video_dimensions(path)
+                    if content_type == "video/mp4" else None)
+            if dims:
+                self.send_header("X-Video-Width", str(dims[0]))
+                self.send_header("X-Video-Height", str(dims[1]))
             self._cors_headers()
             self.end_headers()
             with open(path, "rb") as f:
@@ -508,8 +535,9 @@ class APIHandler(BaseHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+            suffix = f", {dims[0]}x{dims[1]}" if dims else ""
             logger.info(f"Sirviendo fichero {os.path.basename(path)}: "
-                        f"{video_id} ({file_size} bytes)")
+                        f"{video_id} ({file_size} bytes{suffix})")
             return True
         except BrokenPipeError:
             logger.debug(f"Cliente desconectado durante {os.path.basename(path)}")

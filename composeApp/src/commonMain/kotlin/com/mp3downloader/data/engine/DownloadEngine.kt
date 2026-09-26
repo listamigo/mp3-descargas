@@ -17,7 +17,18 @@ data class DownloadResult(
      */
     val downloadedBytes: Long = 0L,
     /** Current throughput, for the "at 320 KB/s" part of the progress line. */
-    val bytesPerSecond: Long = 0L
+    val bytesPerSecond: Long = 0L,
+    /**
+     * Altura REAL del MP4 servido, leída de la cabecera `X-Video-Height`.
+     * 0 cuando el servidor no la manda o cuando es audio.
+     *
+     * Existe por una razón concreta: pedir 1080p y recibir 360p era el
+     * defecto de esta ruta. El selector cae a su último término cuando no
+     * hay formatos altos y no dice nada, así que la app anunciaba 1080p
+     * sobre un fichero de 640x360. Con la medida, la etiqueta dice lo que
+     * hay en el disco.
+     */
+    val deliveredHeight: Int = 0
 )
 
 /** Number of results requested per search page. */

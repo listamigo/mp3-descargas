@@ -325,6 +325,11 @@ class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.server
 
             val inputStream = connection.inputStream
             val headerBytes = connection.contentLengthLong
+            // El servidor mide el MP4 con ffprobe antes de servirlo y manda la
+            // altura real. Es la unica forma de que la etiqueta diga 360p si
+            // lo que hay en el disco es 360p, en vez de prometer lo pedido.
+            val deliveredHeight = connection.getHeaderField("X-Video-Height")
+                ?.trim()?.toIntOrNull() ?: 0
             // The server only sets Content-Length on a cache hit; on a cache
             // miss it streams chunked, so fall back to the estimate.
             //
@@ -438,7 +443,8 @@ class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.server
                     songId = song.id,
                     status = DownloadStatus.COMPLETED,
                     progress = 1f,
-                    outputPath = outputFile.absolutePath
+                    outputPath = outputFile.absolutePath,
+                    deliveredHeight = deliveredHeight
                 ))
                 reportSuccess()
 
