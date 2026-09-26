@@ -409,10 +409,17 @@ class MainViewModel(
         return _downloads.value.filter { it.status == DownloadStatus.FAILED }
     }
 
-    fun clearFinishedDownloads() {
-        _downloads.value = _downloads.value.filter {
-            it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED
-        }
+    /**
+     * Drops the finished items of one section only.
+     *
+     * There used to be a single function behind both "Limpiar"
+     * buttons, so clearing the completed list also wiped the failed one, and
+     * vice versa. The buttons look separate, so they have to behave separately:
+     * a failed download is the one the user most wants to keep, because it is
+     * the one they still have to retry.
+     */
+    fun clearSection(status: DownloadStatus) {
+        _downloads.value = _downloads.value.filter { it.status != status }
     }
 
     private fun updateTask(

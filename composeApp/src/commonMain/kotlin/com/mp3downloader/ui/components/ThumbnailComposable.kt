@@ -19,10 +19,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 
+/**
+ * @param modifier carries the size. The default keeps the old 52 dp so callers
+ *   that do not care do not have to pass one, but the size is no longer forced
+ *   from inside: the search card needs a larger thumb and was previously stuck
+ *   with 52 dp because the internal `.size()` won over the caller's.
+ */
 @Composable
 fun ThumbnailImage(
     url: String?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier.size(52.dp)
 ) {
     val bitmap = rememberThumbnailBitmap(url)
     if (bitmap != null) {
@@ -30,7 +36,6 @@ fun ThumbnailImage(
             bitmap = bitmap,
             contentDescription = null,
             modifier = modifier
-                .size(52.dp)
                 .shadow(4.dp, RoundedCornerShape(10.dp))
                 .clip(RoundedCornerShape(10.dp)),
             contentScale = ContentScale.Crop
@@ -38,7 +43,6 @@ fun ThumbnailImage(
     } else {
         Box(
             modifier = modifier
-                .size(52.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(
                     Brush.linearGradient(

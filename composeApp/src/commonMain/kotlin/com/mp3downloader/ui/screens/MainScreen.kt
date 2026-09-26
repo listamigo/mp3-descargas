@@ -330,7 +330,7 @@ fun MainScreen(viewModel: MainViewModel) {
                         downloads = downloads,
                         onCancel = viewModel::cancelDownload,
                         onRetry = viewModel::retryDownload,
-                        onClearFinished = viewModel::clearFinishedDownloads
+                        onClearSection = viewModel::clearSection
                     )
                 }
             }
@@ -788,14 +788,13 @@ private fun DownloadsTab(
     downloads: List<com.mp3downloader.domain.model.DownloadTask>,
     onCancel: (String) -> Unit,
     onRetry: (String) -> Unit,
-    onClearFinished: () -> Unit = {}
+    onClearSection: (DownloadStatus) -> Unit = {}
 ) {
     val active = downloads.filter {
         it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED
     }
     val completed = downloads.filter { it.status == DownloadStatus.COMPLETED }
     val failed = downloads.filter { it.status == DownloadStatus.FAILED }
-    val hasFinished = completed.isNotEmpty() || failed.isNotEmpty()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -820,10 +819,8 @@ private fun DownloadsTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     SectionHeader("Completadas (${completed.size})")
-                    if (hasFinished) {
-                        TextButton(onClick = onClearFinished) {
-                            Text("Limpiar", color = MaterialTheme.colorScheme.error)
-                        }
+                    TextButton(onClick = { onClearSection(DownloadStatus.COMPLETED) }) {
+                        Text("Limpiar", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
@@ -846,10 +843,8 @@ private fun DownloadsTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     SectionHeader("Fallidas (${failed.size})")
-                    if (hasFinished) {
-                        TextButton(onClick = onClearFinished) {
-                            Text("Limpiar", color = MaterialTheme.colorScheme.error)
-                        }
+                    TextButton(onClick = { onClearSection(DownloadStatus.FAILED) }) {
+                        Text("Limpiar", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
