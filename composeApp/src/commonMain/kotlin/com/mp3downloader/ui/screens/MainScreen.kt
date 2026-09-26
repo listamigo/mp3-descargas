@@ -97,6 +97,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.sin
 import kotlin.random.Random
+import com.mp3downloader.data.engine.MediaKind
 import com.mp3downloader.data.engine.RemoteConfig
 import com.mp3downloader.data.storage.PlatformWallpaper
 import com.mp3downloader.data.storage.rememberWallpaperPicker
@@ -324,6 +325,9 @@ fun MainScreen(viewModel: MainViewModel) {
                         previewPaused = previewPaused,
                         onPreviewClick = viewModel::togglePreview,
                         onDownloadClick = viewModel::download,
+                        onDownloadVideoClick = { song, quality ->
+                            viewModel.download(song, MediaKind.VIDEO, quality)
+                        },
                         onErrorDismiss = viewModel::clearError
                     )
                     AppTab.DOWNLOADS -> DownloadsTab(
@@ -665,8 +669,15 @@ private fun SearchTab(
     previewPaused: Boolean,
     onPreviewClick: (com.mp3downloader.domain.model.Song) -> Unit,
     onDownloadClick: (com.mp3downloader.domain.model.Song) -> Unit,
+    onDownloadVideoClick: (com.mp3downloader.domain.model.Song, Int) -> Unit,
     onErrorDismiss: () -> Unit
 ) {
+    // Solo una tarjeta puede mostrar el selector de vídeo. Guardar el id aquí,
+    // en vez de un booleano dentro de cada tarjeta, es lo que hace que mantener
+    // pulsada otra tarjeta cierre el selector de la anterior en lugar de dejar
+    // dos abiertos a la vez.
+    var videoOptionsSongId by remember { mutableStateOf<String?>(null) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         SearchBar(
             query = searchQuery,
@@ -728,7 +739,12 @@ private fun SearchTab(
                         isPreviewLoading = previewLoading == song.id,
                         isPaused = previewPaused && previewingSongId == song.id,
                         onPreviewClick = { onPreviewClick(song) },
-                        onDownloadClick = { onDownloadClick(song) }
+                        onDownloadClick = { onDownloadClick(song) },
+                        onDownloadVideoClick = { quality -> onDownloadVideoClick(song, quality) },
+                        showVideoOptions = videoOptionsSongId == song.id,
+                        onVideoOptionsChange = { open ->
+                            videoOptionsSongId = if (open) song.id else null
+                        }
                     )
                 }
 

@@ -36,9 +36,35 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mp3downloader.domain.model.Song
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
+import com.mp3downloader.data.engine.VIDEO_QUALITIES
+import kotlin.math.abs
 
 /** Bitrate the server encodes every download with (`-codec:a libmp3lame -b:a 256k`). */
 private const val MP3_BITRATE_KBPS = 256
+
+/**
+ * Mantener pulsado "Descargar" este tiempo abre el selector de vídeo.
+ */
+private const val HOLD_FOR_VIDEO_MS = 600L
 
 private val UNKNOWN_ARTISTS = setOf(
     "artista desconocido",
@@ -62,6 +88,7 @@ private val UNKNOWN_ARTISTS = setOf(
  * because the encode is CBR and `duration * 32000` was measured against a real
  * download at 0,001 % error.
  */
+
 @Composable
 fun SongListItem(
     song: Song,
@@ -70,8 +97,35 @@ fun SongListItem(
     isPaused: Boolean = false,
     onPreviewClick: () -> Unit,
     onDownloadClick: () -> Unit,
+    onDownloadVideoClick: (quality: Int) -> Unit = { },
+    showVideoOptions: Boolean = false,
+    onVideoOptionsChange: (Boolean) -> Unit = { },
     modifier: Modifier = Modifier
 ) {
+    // La opción de vídeo vive escondida: hay que MANTENER pulsado el botón
+    // de descargar. Se mide en vez de usar el largo estándar de Material
+    // (500 ms) porque 500 ms se dispara sin querer al mover el dedo, y que el
+    // selector aparezca a medias es peor que que no exista. 600 ms es
+    // suficiente para hacerlo a propósito y lo bastante corto para que la app
+    // no parezca colgada.
+    //
+    // El selector no es estado propio de la tarjeta: el padre guarda cuál es la
+    // única tarjeta abierta, así mantener pulsada otra cierra la anterior en
+    // lugar de dejar dos selectores a la vez.
+    val holdProgress = remember { Animatable(0f) }
+    var isPressing by remember { mutableStateOf(false) }
+
+    // El avance se anima fuera del gesto porque un dedo quieto no genera
+    // eventos de puntero: contando eventos, la barra no avanzaría justo
+    // mientras el usuario está haciendo la pulsación bien hecha.
+    LaunchedEffect(isPressing) {
+        if (isPressing) {
+            holdProgress.animateTo(1f, tween(HOLD_FOR_VIDEO_MS.toInt()))
+        } else {
+            holdProgress.snapTo(0f)
+        }
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -180,21 +234,108 @@ fun SongListItem(
 
                         Spacer(modifier = Modifier.width(4.dp))
 
-                        Button(
-                            onClick = onDownloadClick,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            contentPadding = PaddingValues(horizontal = 10.dp),
-                            modifier = Modifier.height(34.dp)
+                        // El botón distingue tres gestos: tocar descarga el
+                        // MP3, mantener lo suficiente abre el selector de vídeo,
+                        // y soltar antes de tiempo no hace nada.
+                        val haptics = LocalHapticFeedback.current
+                        Box(
+                            modifier = Modifier
+                                .height(34.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                                .pointerInput(Unit) {
+                                    // touchSlop vive en PointerInputScope, fuera del
+                                    // ámbito del gesto, de ahí el paso explícito.
+                                    val touchSlop = viewConfiguration.touchSlop
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        isPressing = true
+                                        var movedBeforeHold = false
+
+                                        // El umbral se mide contra el reloj del
+                                        // propio ámbito de eventos, no contando
+                                        // eventos: un dedo quieto no genera
+                                        // ninguno, y esperando a que llegara uno
+                                        // la pulsación larga no se dispararía
+                                        // nunca. Devolver sin valor significa
+                                        // "soltado o movido", y agotar el tiempo
+                                        // significa "mantenido".
+                                        val held = withTimeoutOrNull(HOLD_FOR_VIDEO_MS) {
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change = event.changes
+                                                    .firstOrNull { it.id == down.id }
+                                                    ?: return@withTimeoutOrNull
+                                                if (!change.pressed) return@withTimeoutOrNull
+                                                val delta = change.positionChangeIgnoreConsumed()
+                                                if (abs(delta.x) > touchSlop ||
+                                                    abs(delta.y) > touchSlop
+                                                ) {
+                                                    movedBeforeHold = true
+                                                    return@withTimeoutOrNull
+                                                }
+                                            }
+                                        } == null
+
+                                        isPressing = false
+
+                                        if (held) {
+                                            haptics.performHapticFeedback(
+                                                HapticFeedbackType.LongPress
+                                            )
+                                            onVideoOptionsChange(true)
+
+                                            // Con el selector ya abierto, seguir
+                                            // arrastrando hacia arriba o abajo
+                                            // lo cierra: la mano ya está en
+                                            // marcha y el gesto natural es
+                                            // apartarla. No se consume nada, así
+                                            // la lista sigue desplazándose igual.
+                                            var dragX = 0f
+                                            var dragY = 0f
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change = event.changes
+                                                    .firstOrNull { it.id == down.id }
+                                                    ?: break
+                                                if (!change.pressed) break
+                                                val delta =
+                                                    change.positionChangeIgnoreConsumed()
+                                                dragX += delta.x
+                                                dragY += delta.y
+                                                if (abs(dragY) > touchSlop &&
+                                                    abs(dragY) > abs(dragX)
+                                                ) {
+                                                    onVideoOptionsChange(false)
+                                                    break
+                                                }
+                                            }
+                                        } else if (!movedBeforeHold) {
+                                            onDownloadClick()
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = "Descargar",
                                 style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimary
                             )
+                            // El borde de progreso es lo que comunica que hay
+                            // que seguir manteniendo; sin él el gesto es
+                            // indistinguible de un toque lentísimo.
+                            if (holdProgress.value > 0f) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .fillMaxWidth(holdProgress.value)
+                                        .height(3.dp)
+                                        .background(MaterialTheme.colorScheme.onPrimary)
+                                )
+                            }
                         }
                     }
 
@@ -211,6 +352,47 @@ fun SongListItem(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             textAlign = TextAlign.End
+                        )
+                    }
+                }
+            }
+
+            // El selector ocupa una fila propia con todo el ancho de la tarjeta.
+            // Dentro de la columna de los botones no caben cuatro calidades, y al
+            // intentar meterlas esa columna se estiraba hasta el ancho completo y
+            // se comía el título: la tarjeta se quedaba sin texto justo cuando
+            // aparecía la opción de vídeo.
+            AnimatedVisibility(
+                visible = showVideoOptions,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Vídeo",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    VIDEO_QUALITIES.forEach { q ->
+                        FilterChip(
+                            selected = false,
+                            onClick = {
+                                onVideoOptionsChange(false)
+                                onDownloadVideoClick(q)
+                            },
+                            label = {
+                                Text(
+                                    text = "${q}p",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            },
+                            modifier = Modifier.height(28.dp)
                         )
                     }
                 }

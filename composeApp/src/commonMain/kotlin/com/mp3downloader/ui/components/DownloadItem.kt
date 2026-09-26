@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.mp3downloader.data.engine.MediaKind
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.DownloadTask
 
@@ -43,7 +44,12 @@ fun DownloadItem(
     onRetry: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val isActive = task.status == DownloadStatus.DOWNLOADING || task.status == DownloadStatus.QUEUED
+    // CONVERTING entra también en juego mientras el servidor prepara el MP4: sin
+    // eso no habría botón de cancelar durante la espera, que es justo donde más
+    // urge poder hacerlo.
+    val isActive = task.status == DownloadStatus.DOWNLOADING ||
+        task.status == DownloadStatus.QUEUED ||
+        task.status == DownloadStatus.CONVERTING
     val isCompleted = task.status == DownloadStatus.COMPLETED
     val isFailed = task.status == DownloadStatus.FAILED
 
@@ -91,10 +97,20 @@ fun DownloadItem(
                     Spacer(modifier = Modifier.height(1.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = statusText(task.status),
+                            text = statusText(task),
                             style = MaterialTheme.typography.bodySmall,
                             color = statusColor(task.status)
                         )
+                        // El modo de vídeo no se deduce del icono: la misma tarjeta
+                        // sirve para MP3 y MP4, así que se muestra junto al estado.
+                        val formatLabel = formatLabel(task)
+                        if (formatLabel != null) {
+                            Text(
+                                text = "  $formatLabel",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (isCompleted && task.fileSizeBytes > 0L) {
                             Text(
                                 text = "  ${formatFileSize(task.fileSizeBytes)}",
@@ -257,13 +273,26 @@ private fun statusIcon(status: DownloadStatus) = when (status) {
     else -> Icons.Rounded.MusicNote
 }
 
-private fun statusText(status: DownloadStatus): String = when (status) {
+private fun statusText(task: DownloadTask): String = when (task.status) {
     DownloadStatus.IDLE -> "Inactivo"
     DownloadStatus.QUEUED -> "En cola..."
     DownloadStatus.DOWNLOADING -> "Descargando..."
-    DownloadStatus.CONVERTING -> "Convirtiendo..."
+    // Para vídeo esta fase no es codificar: es el servidor descargando y
+    // fusionando el MP4 antes de empezar a servirlo. "Convirtiendo" sería
+    // mentir, y "Descargando" sin un solo byte parece colgado.
+    DownloadStatus.CONVERTING ->
+        if (task.media == MediaKind.VIDEO) "Preparando vídeo..." else "Convirtiendo..."
     DownloadStatus.COMPLETED -> "Completado"
     DownloadStatus.FAILED -> "Fallido"
+}
+
+/**
+ * MP3 no se etiqueta porque siempre es el formato por defecto; el MP4 sí, junto con
+ * la calidad pedida, para no confundirlo con una descarga de audio.
+ */
+private fun formatLabel(task: DownloadTask): String? = when (task.media) {
+    MediaKind.VIDEO -> if (task.quality > 0) "MP4 ${task.quality}p" else "MP4"
+    MediaKind.AUDIO -> null
 }
 
 @Composable
