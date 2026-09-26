@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -119,7 +120,12 @@ class MainViewModel(
     init {
         viewModelScope.launch {
             val history = historyRepository.loadHistory()
-            _downloads.value = history
+            // No se pisa la lista. Esta asignación sustituye todo, y como la
+            // lectura del historial tarda lo suyo, se tragaba las descargas
+            // que el usuario acababa de lanzar: la app ponía "Sin descargas"
+            // mientras había descargas corriendo de verdad. Se fusiona y, si
+            // coincide el vídeo, manda la versión viva que no está en disco.
+            _downloads.update { current -> (current + history).distinctBy { it.song.id } }
         }
 
         viewModelScope.launch {
@@ -380,8 +386,10 @@ class MainViewModel(
             it.song.id == songId && it.status == DownloadStatus.FAILED
         }
         if (failedTask != null) {
-            _downloads.value = _downloads.value.filter { it.song.id != songId }
-            // Pequeño delay para dar tiempo a que la conexión se recupere
+            // La fila NO se borra. Antes se quitaba y se volvía a crear 1 s
+            // después, así que el vídeo desaparecía de la lista y solo volvía
+            // si el historial no la pisaba. download() sustituye la tarea en
+            // la misma operación, así que no parpadea.
             viewModelScope.launch {
                 kotlinx.coroutines.delay(1000)
                 download(failedTask.song, failedTask.media, failedTask.quality)

@@ -343,7 +343,14 @@ class APIHandler(BaseHTTPRequestHandler):
                     quality = int(params.get("quality", ["720"])[0])
                 except (TypeError, ValueError):
                     quality = 720
-                estimate = self._video_size_estimate(video_id, quality)
+                # Deadline corto a propósito: la app espera 25 s y solo cambia
+                # de host si esta respuesta llega antes. Con 15 s hay margen
+                # para que responda aunque YouTube se cuelgue.
+                estimate = self._video_size_estimate(
+                    video_id,
+                    quality,
+                    deadline_s=float(os.environ.get("READY_PROBE_DEADLINE", "15")),
+                )
                 self._json(200, {
                     "ok": estimate is not None,
                     "videoId": video_id,
@@ -563,7 +570,9 @@ class APIHandler(BaseHTTPRequestHandler):
             return None
         return None
 
-    def _video_size_estimate(self, video_id: str, quality: int) -> int | None:
+    def _video_size_estimate(
+        self, video_id: str, quality: int, deadline_s: float | None = None
+    ) -> int | None:
         """Peso estimado del MP4 que se pediría, sin descargar nada.
 
         Una consulta de metadatos (yt-dlp -J) que se resuelve en 6-20 s: hay
@@ -579,7 +588,16 @@ class APIHandler(BaseHTTPRequestHandler):
         """
         fmt = self._video_format_selector(quality)
         url = f"https://youtube.com/watch?v={video_id}"
-        deadline = float(os.environ.get("SIZE_PROBE_DEADLINE", "30"))
+        # El deadline lo puede fijar quien llama: /api/ready va justo y quiere
+        # responder rápido para que la app decida el host a tiempo; la descarga
+        # se puede permitir más margen porque va a tardar igual.
+        if deadline_s is None:
+            deadline_s = float(os.environ.get("SIZE_PROBE_DEADLINE", "30"))
+        # Ningún cliente se puede comer todo el presupuesto: si uno se cuelga
+        # hasta el final, los demás no llegan a probarse nunca y el sondeo
+        # devuelve "no se puede" sin haberlo comprobado.
+        per_client = float(os.environ.get("SIZE_PROBE_CLIENT_TIMEOUT_S", "8"))
+        deadline = deadline_s
         start = time.monotonic()
 
         # Caché: el cliente pregunta antes por /api/ready y, si el host dice que
@@ -603,7 +621,7 @@ class APIHandler(BaseHTTPRequestHandler):
             try:
                 proc = subprocess.run(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=max(5.0, deadline - (time.monotonic() - start)),
+                    timeout=max(2.0, min(per_client, deadline - (time.monotonic() - start))),
                 )
             except subprocess.TimeoutExpired:
                 break
