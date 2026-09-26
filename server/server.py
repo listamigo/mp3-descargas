@@ -759,7 +759,13 @@ class APIHandler(BaseHTTPRequestHandler):
         last_err = ""
 
         # ── 1. Clients directos, con el mismo deadline que el audio ──
-        direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "8"))
+        # 25s, no 8s. Medido el 2026-09-26: una descarga que SÍ funciona tarda
+        # 3-6s solo en el handshake (extraer formatos + resolver el player), y
+        # el deadline se comprueba ANTES de arrancar cada client. Con 8s, si los
+        # dos primeros tardaban 4s cada uno, el tercero que sí iba a funcionar
+        # ni se intentaba. Ahora caben 4-5 intentos completos, que es lo que
+        # hace falta para llegar al client bueno cuando los anteriores fallan.
+        direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "25"))
         if not direct_path_available():
             direct_deadline = 0.0
         _start = time.monotonic()
@@ -828,20 +834,19 @@ class APIHandler(BaseHTTPRequestHandler):
             workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
             try:
                 logger.info(f"Vídeo {video_id} por proxy {proxy}")
-                # Escalera de clients, UNO POR COMANDO. Medido el 2026-09-26 con
-                # XqD0oCHLIF8 y yt-dlp 2026.8.19 limpio:
-                #   tv_embedded a secas -> escalera completa 144p..1080p y
-                #                 descarga real de 1920x1080 SIN PO token.
-                #   lista de clients   -> exige PO token para el conjunto y no
-                #                 extrae nada (mismo comportamiento que rompio
-                #                 el MP3 en c88bd97, revertido en 016536a).
-                #   android a secas -> solo el muxed itag 18 de 640x360.
-                # Por eso primero tv_embedded (el único que da >360p) y si el
-                # fallo es de token/cookies se cae a android, que es el suelo
-                # de 360p que ya funcionaba. Antes la escalera era (lista
-                # completa, android): la lista caia por token y el resultado
-                # era siempre 360p, pidieras 720p o 1080p.
-                for clients in ("tv_embedded", "android"):
+                # Escalera de clients del proxy, UNO POR COMANDO. Misma
+                # medición que la de VIDEO_CLIENTS en download_engine (2026-09-26,
+                # NbRI7mTeH7A, yt-dlp 2026.08.19, descarga real a 360p):
+                #   web_embedded -> escalera completa hasta 720p + itag 18 de
+                #                   360p, y sin avisos de PO token.
+                #   android      -> solo el muxed itag 18 de 640x360, sin token.
+                # Se prueban de uno en uno porque la lista entera se cae junta:
+                # cuando un client va con token y otro no, la lista hereda el
+                # fallo del primero y no extrae nada. Antes era (None, "android"),
+                # donde None era la lista completa; y antes de 6092d3b era
+                # (lista, "android"). Quedarse con el suelo de 360p es mejor que
+                # no devolver nada, así que android cierra la escalera.
+                for clients in ("web_embedded", "android"):
                     cmd = _proxy_cmd_video(video_id, proxy, quality, workdir,
                                            clients=clients,
                                            max_bytes=self.VIDEO_MAX_BYTES)

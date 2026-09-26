@@ -211,29 +211,40 @@ def ordered_clients():
 # y un client "degradado" tiene éxito igualmente, así que el bucle se queda
 # con él y nunca llega al bueno.
 #
-# Medido el 2026-09-26 con XqD0oCHLIF8 (opening de Solo Leveling, 101 s),
-# yt-dlp 2026.8.19 limpio (la misma versión que Railway), sin cookies ni
-# PO token. Formatos de vídeo que expone cada client:
+# Medido el 2026-09-26 con NbRI7mTeH7A y yt-dlp 2026.08.19 (la misma versión
+# que el contenedor), con descarga REAL a 360p usando el selector de este repo,
+# no solo `-F`. Resultado por client:
 #
-#   tv_embedded  -> escalera COMPLETA: 144p..1080p en mp4/avc1 (itag 137 es
-#                   1920x1080) más audio itag 140. Descarga verificada con el
-#                   selector del servidor: 1920x1080, 35,4 MB, h264, sin
-#                   cookies, sin PO token y sin provider.
-#   android      -> UN formato: el muxed itag 18 de 640x360, y nada más.
-#   mweb         -> 0 formatos ese día (solo storyboards); otros días dio 8.
-#   tv / web / ios -> 0 formatos o error desde IP de datacenter.
+#   web_embedded -> escalera completa hasta 720p Y el muxed itag 18 de 360p, y
+#                   es el único que no suelta ningún aviso de PO token.
+#                   Descarga verificada: 3,3 MB en 5,5 s. Va primero.
+#   android      -> SOLO el muxed itag 18 de 640x360, y sin token. Descarga
+#                   verificada: 4,8 MB en 5,4 s. Es el suelo: si este cae, no
+#                   hay 360p en ninguna parte, así que va segundo.
+#   mweb         -> escalera completa + itag 18, pero siempre avisa de bgutil.
+#   web / ios    -> 320x180 y sin itag 18: no sirven ni de suelo.
 #
-# Con el orden anterior (mweb primero, android segundo), mweb fallaba, android
-# "tenía éxito" con el muxed de 360p y el bucle se quedaba ahí: pedir 720p o
-# 1080p devolvía 360p real. tv_embedded va primero porque es el único que
-# expone la escalera alta sin token; android queda de red de seguridad.
+# Descartados, y por qué (medido, no de oído):
+#
+#   tv_embedded  -> NO EXISTE en yt-dlp 2026.08.19. Responde "Skipping
+#                   unsupported client" y cae a los clients por defecto: es un
+#                   no-op que solo gasta presupuesto del deadline. Estuvo
+#                   primero en 6092d3b creyendo que traía la escalera alta de
+#                   1080p; la escalera venía del fallback, no de él.
+#   tv           -> "The page needs to be reloaded" en todas las pruebas.
+#   android_vr*  -> exige PO token explícitamente.
+#
+# OJO con lo que este orden NO arregla: el 403 "unable to download video data"
+# desde una IP de datacenter no es un problema de orden de clients. El sondeo de
+# metadatos sí funciona (el tamaño estimado sale bien) y luego la CDN de medios
+# responde 403 a todos los clients, incluido el itag 18 de android. Eso solo se
+# quita con cookies o con un proxy vivo; aquí no hay más recorrido.
 VIDEO_CLIENTS = [
-    "tv_embedded",
-    "mweb",
+    "web_embedded",
     "android",
-    "tv",
-    "ios",
+    "mweb",
     "web",
+    "ios",
     "android_vr,web",
 ]
 
