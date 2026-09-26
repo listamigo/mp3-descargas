@@ -58,11 +58,23 @@ class FallbackEngine(
     }
 
     /**
+     * Hosts whose breaker is open go last, so a host that just failed twice is
+     * not asked a third time while a working one is sitting in the list. They
+     * stay in the chain on purpose: the trip expires after minutes, and
+     * removing them outright would mean no recovery without a restart.
+     */
+    private fun openBreakersLast(): List<DownloadEngine> = buildList {
+        val open = engines.filter { it.isTripped() }
+        engines.filter { it !in open }.forEach { add(it) }
+        open.forEach { add(it) }
+    }
+
+    /**
      * Single ordering rule for search, stream resolution and download:
      * 1. the engine that already answered, so "load more" keeps paging the same
      *    source and the download comes from the backend the user is looking at;
      * 2. engines the platform flagged as worth trying first;
-     * 3. the rest, in declaration order.
+     * 3. the rest, in declaration order, with tripped hosts pushed to the end.
      *
      * Without step 1 on the download path every file paid a full Invidious
      * timeout (~25s here) before reaching a working server.
@@ -70,7 +82,7 @@ class FallbackEngine(
     private fun orderedEngines(): List<DownloadEngine> = buildList {
         lastSearchEngine?.let { add(it) }
         preferredForSearch().filter { it in engines && it !in this }.forEach { add(it) }
-        engines.filter { it !in this }.forEach { add(it) }
+        openBreakersLast().filter { it !in this }.forEach { add(it) }
     }
 
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {

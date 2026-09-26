@@ -206,6 +206,22 @@ fun DownloadItem(
                         )
                     }
                 }
+                // El servidor sirve el audio en streaming sin Content-Length, así
+                // que el porcentaje va estimado a partir de la duración. Estos dos
+                // números son los que sí son exactos, y por eso se muestran: dan
+                // la medida real aunque la estimación del porcentaje se desvíe.
+                val detail = buildList {
+                    if (task.downloadedBytes > 0L) add(formatFileSize(task.downloadedBytes))
+                    if (task.bytesPerSecond > 0L) add("${formatFileSize(task.bytesPerSecond)}/s")
+                }
+                if (detail.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = detail.joinToString("  ·  "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             // ── Output path (completed) ──

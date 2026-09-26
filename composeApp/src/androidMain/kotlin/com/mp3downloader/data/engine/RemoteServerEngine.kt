@@ -62,8 +62,50 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
     private fun server(): String? =
         baseUrl ?: RemoteConfig.serverUrl
 
+    /**
+     * Tripped by the engine when a request to this host fails outright, read
+     * before spending a request on it. See [HostBreaker].
+     */
+    fun reportSuccess() = HostBreaker.reportSuccess(server())
+
+    fun reportFailure(detail: String) = HostBreaker.reportFailure(server(), detail)
+
+    override fun isTripped(): Boolean = HostBreaker.isTripped(server())
+
     /** Reject absurdly large responses to avoid filling the device storage. */
     private val maxDownloadBytes = 250L * 1024 * 1024
+
+    /**
+     * Bytes per second of the encoded MP3, used to turn a duration into a size.
+     *
+     * The server streams the audio as ffmpeg produces it, so it cannot know the
+     * final length and sends no Content-Length. But it encodes with
+     * `-codec:a libmp3lame -b:a 256k`, and CBR MP3 is exactly 32 bytes per 1 ms,
+     * so the total is predictable: measured against a real Render download of
+     * 355,7 s / 11.382.837 bytes, the figure holds to 0,001 %. That is accurate
+     * enough to drive a progress bar, and unlike a declared Content-Length it
+     * cannot desync the response framing if the real size differs.
+     */
+    private val expectedBytesPerSecond = 32_000L
+
+    /**
+     * Best guess at the total size, from the duration the search returned.
+     *
+     * It is the video duration, not the audio duration, so for a video whose
+     * audio is shorter this overshoots and the bar lags instead of lying. That
+     * is the safe direction: [maxProgressWhileStreaming] stops the bar from
+     * reaching 100% before the stream really ends, and the completion event
+     * sets the final value.
+     */
+    private fun expectedTotalBytes(song: Song): Long {
+        if (song.duration <= 0L) return 0L
+        // Cap so a bogus duration cannot make a limit that trips the size guard.
+        val estimate = song.duration * expectedBytesPerSecond
+        return estimate.coerceIn(0L, maxDownloadBytes)
+    }
+
+    /** Never show a full bar while there is still data arriving. */
+    private val maxProgressWhileStreaming = 0.99f
 
     private val httpClient = HttpClient {
         install(HttpTimeout) {
@@ -87,7 +129,7 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
         val server = server() ?: return Result.failure(RuntimeException(
             "Sin servidor propio configurado (opcional)."
         ))
-        return runCatching {
+        val result = runCatching {
             val raw = httpClient.get("$server/api/search") {
                 parameter("q", query)
                 if (offset > 0) parameter("offset", offset)
@@ -112,6 +154,9 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
                 )
             }
         }
+        if (result.isSuccess) reportSuccess()
+        else reportFailure(result.exceptionOrNull()?.message ?: "error desconocido")
+        return result
     }
 
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
@@ -169,11 +214,15 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
                 // Render, que es justo lo que hace falta para diagnosticar.
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
                     error = if (errorBody.length in 10..500) "$label: $errorBody" else "$label: Error HTTP $statusCode"))
+                reportFailure("HTTP $statusCode")
                 return@flow
             }
 
             val inputStream = connection.inputStream
-            val totalBytes = connection.contentLengthLong
+            val headerBytes = connection.contentLengthLong
+            // The server only sets Content-Length on a cache hit; on a cache
+            // miss it streams chunked, so fall back to the estimate.
+            val totalBytes = if (headerBytes > 0) headerBytes else expectedTotalBytes(song)
             if (totalBytes > maxDownloadBytes) {
                 inputStream.close()
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
@@ -183,6 +232,7 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
             var downloadedBytes = 0L
             val bufferSize = 8192
             var lastEmitTime = 0L
+            val startedAt = System.currentTimeMillis()
 
             outputFile.parentFile?.mkdirs()
             FileOutputStream(outputFile).use { outputStream ->
@@ -203,12 +253,31 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
 
                     val now = System.currentTimeMillis()
                     if (now - lastEmitTime >= 300) {
+                        // First tick counts from the start of the transfer, not
+                        // from the first emit, otherwise the speed reads low.
+                        val elapsedSec = ((now - startedAt).coerceAtLeast(1L)) / 1000.0
+                        val speed = (downloadedBytes / elapsedSec).toLong()
                         lastEmitTime = now
                         if (totalBytes > 0) {
-                            val progress = downloadedBytes.toFloat() / totalBytes.toFloat()
-                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, progress))
+                            val progress = (downloadedBytes.toFloat() / totalBytes.toFloat())
+                                .coerceIn(0f, maxProgressWhileStreaming)
+                            emit(DownloadResult(
+                                songId = song.id,
+                                status = DownloadStatus.DOWNLOADING,
+                                progress = progress,
+                                downloadedBytes = downloadedBytes,
+                                bytesPerSecond = speed
+                            ))
                         } else {
-                            emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, -1f))
+                            // No duration to estimate from: bytes and speed are
+                            // all we can honestly show.
+                            emit(DownloadResult(
+                                songId = song.id,
+                                status = DownloadStatus.DOWNLOADING,
+                                progress = -1f,
+                                downloadedBytes = downloadedBytes,
+                                bytesPerSecond = speed
+                            ))
                         }
                     }
                 }
@@ -241,6 +310,7 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
                     progress = 1f,
                     outputPath = outputFile.absolutePath
                 ))
+                reportSuccess()
 
                 val metadataThumb = song.thumbnailUrl
                     .takeIf { it.isNotBlank() && isSafeHttpsUrl(it) }
@@ -263,6 +333,9 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
         } catch (e: Exception) {
             // No dejar parciales truncados en disco (p. ej. corte de red a mitad).
             outputFile.delete()
+            // Una cancelación no dice nada del host: el corte lo pidió el
+            // usuario, así que no debe abrir el cortacircuitos.
+            if (e.message != CANCELLED_ERROR) reportFailure(e.message ?: "excepcion")
             emit(DownloadResult(song.id, DownloadStatus.FAILED, error = e.message))
         } finally {
             activeDownloads.remove(song.id)

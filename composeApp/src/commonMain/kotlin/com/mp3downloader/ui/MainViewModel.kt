@@ -328,7 +328,9 @@ class MainViewModel(
                             progress = result.progress,
                             outputPath = result.outputPath,
                             error = result.error,
-                            fileSizeBytes = savedFileSize
+                            fileSizeBytes = savedFileSize,
+                            downloadedBytes = result.downloadedBytes,
+                            bytesPerSecond = result.bytesPerSecond
                         )
 
                         if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
@@ -419,7 +421,9 @@ class MainViewModel(
         progress: Float? = null,
         outputPath: String? = null,
         error: String? = null,
-        fileSizeBytes: Long? = null
+        fileSizeBytes: Long? = null,
+        downloadedBytes: Long? = null,
+        bytesPerSecond: Long? = null
     ) {
         _downloads.value = _downloads.value.map { task ->
             if (task.song.id == songId) {
@@ -428,7 +432,9 @@ class MainViewModel(
                     progress = progress ?: task.progress,
                     outputPath = outputPath ?: task.outputPath,
                     error = error ?: task.error,
-                    fileSizeBytes = fileSizeBytes ?: task.fileSizeBytes
+                    fileSizeBytes = fileSizeBytes ?: task.fileSizeBytes,
+                    downloadedBytes = downloadedBytes ?: task.downloadedBytes,
+                    bytesPerSecond = bytesPerSecond ?: task.bytesPerSecond
                 )
             } else task
         }

@@ -9,7 +9,15 @@ data class DownloadResult(
     val status: DownloadStatus,
     val progress: Float = 0f,
     val outputPath: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * Bytes written so far. The UI shows this because the remote streams the
+     * audio without a Content-Length, so the bar alone does not say how much is
+     * left.
+     */
+    val downloadedBytes: Long = 0L,
+    /** Current throughput, for the "at 320 KB/s" part of the progress line. */
+    val bytesPerSecond: Long = 0L
 )
 
 /** Number of results requested per search page. */
@@ -28,4 +36,11 @@ interface DownloadEngine {
     suspend fun getAudioStreamUrl(song: Song): Result<String>
     fun download(song: Song, outputDir: String): Flow<DownloadResult>
     suspend fun cancel(songId: String)
+
+    /**
+     * True while this engine's circuit breaker says the backend is down, used
+     * by the chain to try it last. Only the remote engines have a host that can
+     * fail on its own, so the default is false and the others need not know.
+     */
+    fun isTripped(): Boolean = false
 }
