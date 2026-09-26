@@ -211,40 +211,21 @@ def ordered_clients():
 # y un client "degradado" tiene éxito igualmente, así que el bucle se queda
 # con él y nunca llega al bueno.
 #
-# Medido el 2026-09-26 con NbRI7mTeH7A y yt-dlp 2026.08.19 (la misma versión
-# que el contenedor), con descarga REAL a 360p usando el selector de este repo,
-# no solo `-F`. Resultado por client:
+# Medido el 2026-09-25 con ac7KhViaVqc (tráiler de Sintel, 54 s):
+#   mweb              -> 8 formatos: 1920x818, 1280x546, 640x272, 256x110, audio
+#   android           -> 1 formato : 640x272  (el muxed de 360p, y nada más)
+#   android_vr        -> 1 formato : 640x272
+#   web / tv / ios    -> 0 formatos (bloqueados desde IP de datacenter)
 #
-#   web_embedded -> escalera completa hasta 720p Y el muxed itag 18 de 360p, y
-#                   es el único que no suelta ningún aviso de PO token.
-#                   Descarga verificada: 3,3 MB en 5,5 s. Va primero.
-#   android      -> SOLO el muxed itag 18 de 640x360, y sin token. Descarga
-#                   verificada: 4,8 MB en 5,4 s. Es el suelo: si este cae, no
-#                   hay 360p en ninguna parte, así que va segundo.
-#   mweb         -> escalera completa + itag 18, pero siempre avisa de bgutil.
-#   web / ios    -> 320x180 y sin itag 18: no sirven ni de suelo.
-#
-# Descartados, y por qué (medido, no de oído):
-#
-#   tv_embedded  -> NO EXISTE en yt-dlp 2026.08.19. Responde "Skipping
-#                   unsupported client" y cae a los clients por defecto: es un
-#                   no-op que solo gasta presupuesto del deadline. Estuvo
-#                   primero en 6092d3b creyendo que traía la escalera alta de
-#                   1080p; la escalera venía del fallback, no de él.
-#   tv           -> "The page needs to be reloaded" en todas las pruebas.
-#   android_vr*  -> exige PO token explícitamente.
-#
-# OJO con lo que este orden NO arregla: el 403 "unable to download video data"
-# desde una IP de datacenter no es un problema de orden de clients. El sondeo de
-# metadatos sí funciona (el tamaño estimado sale bien) y luego la CDN de medios
-# responde 403 a todos los clients, incluido el itag 18 de android. Eso solo se
-# quita con cookies o con un proxy vivo; aquí no hay más recorrido.
+# Con `android` primero, pedir 720p devolvía 360p sin intentar nada más. Por eso
+# mweb va el primero aquí aunque en la lista de audio llegue en quinto lugar.
 VIDEO_CLIENTS = [
-    "web_embedded",
-    "android",
     "mweb",
-    "web",
+    "android",
+    "tv_embedded",
+    "tv",
     "ios",
+    "web",
     "android_vr,web",
 ]
 
@@ -472,34 +453,12 @@ _FREE_PROXY_CACHE_TTL = 300  # 5 min
 _free_proxy_cache = {"proxies": [], "ts": 0.0}
 _free_proxy_lock = threading.Lock()
 
-# Cuántos candidatos de la lista gratuita se prueban por petición.
-#
-# Antes 20, y además la fuente principal pedía `limit=20&page=1`, así que el
-# tope era 20 de verdad: siempre los mismos 20, en el mismo orden, cacheados
-# 5 minutos. Medido el 2026-09-26 desde el contenedor: de esos 20 pasaban el
-# filtro TCP 2, y los 2 fallaban el sondeo, así que la descarga se rendía con
-# "Sin proxy utilizable (2 probados tras filtro TCP de 20)". Como el proxy es
-# la ÚNICA vía que deshace el 403 de la CDN de YouTube en IP de datacenter, un
-# tope de 20 sonaba a "no hay proxy" cuando lo que había era "no hemos
-# mirado los siguientes". Ahora se piden 100 por página hasta 3 páginas y se
-# prueban 60.
-#
-# El coste no es gratis: los candidatos que no aceptan conexión mueren en el
-# sondeo TCP (TCP_PROBE_TIMEOUT, 1,5 s) y los que sí, en PROXY_PROBE_TIMEOUT
-# (6 s). Por eso el bucle para por reloj y no solo por número, con
-# PROXY_SEARCH_BUDGET_S, y no nos pasamos de la cuenta esperando por un proxy
-# que quizá no exista.
-FREE_PROXY_CANDIDATES = int(os.environ.get("FREE_PROXY_CANDIDATES", "60"))
-
-# Presupuesto de reloj para buscar un proxy, en segundos. Alcanza para
-# sondear del orden de 25-30 candidatos (los que no pasan el TCP son 1,5 s),
-# que es lo que hace falta para que salga alguno vivo de una lista gratuita.
-PROXY_SEARCH_BUDGET_S = float(os.environ.get("PROXY_SEARCH_BUDGET_S", "60"))
-
-# Páginas de 100 que se piden a GeoNode. La API ordena por lastChecked
-# descendente, así que las primeras páginas son las más recién comprobadas y
-# las que menos mueren.
-FREE_PROXY_PAGES = int(os.environ.get("FREE_PROXY_PAGES", "3"))
+# Cuántos candidatos de la lista gratuita se prueban por petición. Antes 20:
+# la lista de GeoNode está llena de SOCKS5 muertos, así que 20 candidatos
+# con 6s cada uno son 120s por intento y hasta 480s por descarga. Con el
+# sondeo TCP previo (1s) 20 candidatos cuestan ~20s en el peor caso, y los
+# que sí funcionan se recuerdan para el siguiente request.
+FREE_PROXY_CANDIDATES = int(os.environ.get("FREE_PROXY_CANDIDATES", "20"))
 
 # Sondeo TCP barato para descartar proxies muertos ANTES de pagarles una
 # invocación de yt-dlp. Los proxies que rechazan la conexión mueren rápido,
@@ -606,33 +565,22 @@ def _fetch_free_proxies() -> list[str]:
 
     proxies: list[str] = []
 
-    # Fuente 1: GeoNode (principal). Se piden varias páginas de 100 en vez de
-    # una de 20: con una sola página el techo real de candidatos eran 20 y se
-    # agotaban en el primer request (ver FREE_PROXY_CANDIDATES).
-    for page in range(1, FREE_PROXY_PAGES + 1):
-        if len(proxies) >= FREE_PROXY_CANDIDATES:
-            break
-        try:
-            req = urllib.request.Request(
-                "https://proxylist.geonode.com/api/proxy-list?"
-                f"limit=100&page={page}&sort_by=lastChecked&sort_type=desc&protocols=socks5",
-                headers={"User-Agent": random.choice(USER_AGENTS)},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
-                found = [
-                    f"socks5://{p['ip']}:{p['port']}"
-                    for p in data.get("data", [])
-                    if p.get("ip") and p.get("port")
-                ]
-            if not found:
-                break
-            for p in found:
-                if p not in proxies:
-                    proxies.append(p)
-        except Exception as e:
-            logger.warning(f"GeoNode proxy fetch failed (pagina {page}): {e}")
-            break
+    # Fuente 1: GeoNode (principal)
+    try:
+        req = urllib.request.Request(
+            "https://proxylist.geonode.com/api/proxy-list?"
+            "limit=20&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
+            headers={"User-Agent": random.choice(USER_AGENTS)},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            proxies = [
+                f"socks5://{p['ip']}:{p['port']}"
+                for p in data.get("data", [])
+                if p.get("ip") and p.get("port")
+            ]
+    except Exception as e:
+        logger.warning(f"GeoNode proxy fetch failed: {e}")
 
     # Fuente 2: Si GeoNode falló, intentar SOCKSProxyList
     if not proxies:
@@ -890,23 +838,8 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
     # ~3s (validado: 193.25.215.182 dio get-url en ~3s). Se prueban hasta
     # FREE_PROXY_CANDIDATES, con el filtro TCP el coste de los muertos es
     # ~1.5s cada uno en lugar de los 6s completos.
-    #
-    # El tope son dos, y el que manda es el reloj: PROXY_SEARCH_BUDGET_S. Con
-    # 60 candidatos y una lista gratuita donde solo pasa el filtro TCP uno de
-    # cada diez, el bucle se pasaría de minuto y medio esperando al último. El
-    # reloj corta antes, así que ampliar candidatos nunca convierte una espera
-    # corta en una larga, solo hace que, cuando hay presupuesto, se mire más
-    # lejos. Ahora se registra si fue el reloj o la lista lo que cortó, porque
-    # "sin proxy" y "no dio tiempo" son fallos distintos.
     probed = 0
-    started = time.monotonic()
-    cut_by_clock = False
     for proxy in candidates[:FREE_PROXY_CANDIDATES]:
-        if time.monotonic() - started > PROXY_SEARCH_BUDGET_S:
-            cut_by_clock = True
-            logger.debug(f"Presupuesto de busqueda de proxy agotado "
-                         f"({PROXY_SEARCH_BUDGET_S:.0f}s) tras {probed} probados")
-            break
         if not _proxy_tcp_alive(proxy):
             logger.debug(f"Proxy {proxy} no acepta conexión, descartado")
             continue
@@ -937,8 +870,7 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
         except Exception:
             continue
     logger.info(f"Sin proxy utilizable para {video_id} "
-                f"({probed} probados tras filtro TCP de {len(candidates)}"
-                f"{', cortados por presupuesto de tiempo' if cut_by_clock else ''})")
+                f"({probed} probados tras filtro TCP de {len(candidates)})")
     return None
 
 
