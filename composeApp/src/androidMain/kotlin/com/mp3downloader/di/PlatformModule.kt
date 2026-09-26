@@ -16,16 +16,19 @@ import org.koin.dsl.module
 
 actual val platformModule: Module = module {
     single<DownloadEngine> {
-        val remote = RemoteServerEngine()
+        // Un motor por host, en orden: si el principal cae, FallbackEngine pasa
+        // al siguiente. Render va segundo porque su arranque en frio es mas
+        // lento, pero es el que sobrevive a que Railway se quede sin credito.
+        val remote = RemoteConfig.remoteServerUrls.map { RemoteServerEngine(it) }
+        val invidious = InvidiousApiEngine()
         val engines = mutableListOf<DownloadEngine>()
-        // Invidious primero: es la única vía gratuita que funciona sin
-        // servidor propio (instancia verificada por defecto en el engine).
-        // El servidor propio queda como segunda opción y, cuando ya está
-        // despierto, adelanta a Invidious en las búsquedas porque devuelve el
-        // nombre real del artista en vez del canal del que extrajo el título.
-        // Piped solo entra si el usuario indica una instancia viva.
-        engines.add(InvidiousApiEngine())
-        engines.add(remote)
+        // Orden: los servidores remotos van primero y en prioridad, Render
+        // justo detrás del principal. Invidious y Piped son el último recurso
+        // porque su audio no se puede descargar (el companion de f5.si devuelve
+        // error), así que intercalarlos entre los dos servidores los dejaría
+        // respondiendo la búsqueda y rompiendo la descarga.
+        engines.addAll(remote)
+        engines.add(invidious)
         engines.add(PipedApiEngine())
         FallbackEngine(
             engines = engines,
@@ -42,7 +45,11 @@ actual val platformModule: Module = module {
                     CoroutineScope(currentCoroutineContext()).launch { RemoteHealth.refresh() }
                 }
             },
-            preferredForSearch = { if (RemoteHealth.isWarm) listOf(remote) else emptyList() }
+            // Con el servidor despierto los remotos ya van primero por orden de
+            // declaración, así que no hay nada que adelantar. Mientras está
+            // dormido se invierte: Invidious contesta la búsqueda en segundos y
+            // la descarga cae sola al remoto cuando llega el momento.
+            preferredForSearch = { if (RemoteHealth.isWarm) emptyList() else listOf(invidious) }
         )
     }
     single { AudioPreviewer() }

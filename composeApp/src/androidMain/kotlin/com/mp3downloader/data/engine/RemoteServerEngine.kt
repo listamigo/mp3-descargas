@@ -38,7 +38,29 @@ data class RemoteSearchItem(
 
 private val remoteJson = Json { ignoreUnknownKeys = true }
 
-class RemoteServerEngine : DownloadEngine {
+/**
+ * @param baseUrl host this instance talks to. One engine is built per host so
+ *   the chain can fall through from Railway to Render. When null it follows
+ *   [RemoteConfig.serverUrl], which is what a single-server setup wants.
+ */
+class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
+
+    /**
+     * A name that says which host this is, so the fallback log lines point at
+     * the backend that actually failed instead of printing the same
+     * "RemoteServerEngine" twice.
+     */
+    val label: String = baseUrl
+        ?.substringAfter("://")
+        ?.substringBefore("/")
+        ?: "Remoto"
+
+    /**
+     * Resolved per call rather than cached: a Settings change has to reach the
+     * engines without restarting the app.
+     */
+    private fun server(): String? =
+        baseUrl ?: RemoteConfig.serverUrl
 
     /** Reject absurdly large responses to avoid filling the device storage. */
     private val maxDownloadBytes = 250L * 1024 * 1024
@@ -62,7 +84,7 @@ class RemoteServerEngine : DownloadEngine {
     private val metadataScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun search(query: String, offset: Int): Result<List<Song>> {
-        val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
+        val server = server() ?: return Result.failure(RuntimeException(
             "Sin servidor propio configurado (opcional)."
         ))
         return runCatching {
@@ -93,7 +115,7 @@ class RemoteServerEngine : DownloadEngine {
     }
 
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
-        val server = RemoteConfig.serverUrl ?: return Result.failure(RuntimeException(
+        val server = server() ?: return Result.failure(RuntimeException(
             "Sin servidor propio configurado (opcional)."
         ))
         if (!isValidYouTubeId(song.id)) {
@@ -108,7 +130,7 @@ class RemoteServerEngine : DownloadEngine {
         song: Song,
         outputDir: String
     ): Flow<DownloadResult> = flow {
-        val server = RemoteConfig.serverUrl
+        val server = server()
             ?: run {
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
                     error = "Sin servidor propio configurado (opcional)."))
@@ -142,8 +164,11 @@ class RemoteServerEngine : DownloadEngine {
                 val errorBody = try {
                     connection.errorStream?.bufferedReader()?.readText() ?: ""
                 } catch (_: Exception) { "" }
+                // El host va en el mensaje porque ahora hay dos motores iguales en
+                // la cadena: sin él, "Error HTTP 502" no dice si fue Railway o
+                // Render, que es justo lo que hace falta para diagnosticar.
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
-                    error = if (errorBody.length in 10..500) "Servidor: $errorBody" else "Error HTTP $statusCode"))
+                    error = if (errorBody.length in 10..500) "$label: $errorBody" else "$label: Error HTTP $statusCode"))
                 return@flow
             }
 
@@ -249,7 +274,7 @@ class RemoteServerEngine : DownloadEngine {
     }
 
     suspend fun checkHealth(): Boolean {
-        val server = RemoteConfig.serverUrl ?: return false
+        val server = server() ?: return false
         return try {
             val resp = httpClient.get("$server/api/health")
             resp.status.value in 200..299

@@ -26,11 +26,28 @@ object RemoteConfig {
      */
     const val DEFAULT_SERVER_URL = "https://mp3downloader-server-production.up.railway.app"
 
+    /**
+     * Second host, used only when the primary one fails.
+     *
+     * Render earns this slot because it is the one deployment that survives
+     * Railway running out of credit: Render's free tier is 750 instance
+     * hours a month, not a $1 monthly credit that the container burns on
+     * memory while it stays up.
+     *
+     * Slower cold, which is the price: measured 2026-09-25 with the same code
+     * on both hosts, first download of a never-requested video took 3,4 s to
+     * first byte on Railway and 12,0 s on Render (11,8 MB, 63 s total). Once
+     * the container has the file cached both answer in well under a second, so
+     * the gap only shows on the first download after the host boots.
+     */
+    const val DEFAULT_FALLBACK_SERVER_URL = "https://mp3-descargas-1.onrender.com"
+
     private val json = Json { ignoreUnknownKeys = true }
 
     @Serializable
     private data class StoredConfig(
         val serverUrl: String? = null,
+        val fallbackServerUrl: String? = null,
         val invidiousUrl: String? = null,
         val pipedUrl: String? = null,
     )
@@ -61,6 +78,28 @@ object RemoteConfig {
             cached = stored().copy(serverUrl = value?.trim()?.takeIf { it.isNotBlank() })
             save()
         }
+
+    /**
+     * Second-choice host, or [DEFAULT_FALLBACK_SERVER_URL] when unset, so the
+     * chain always has a second server without the user configuring anything.
+     */
+    var fallbackServerUrl: String?
+        get() = stored().fallbackServerUrl?.takeIf { it.isNotBlank() } ?: DEFAULT_FALLBACK_SERVER_URL
+        set(value) {
+            cached = stored().copy(fallbackServerUrl = value?.trim()?.takeIf { it.isNotBlank() })
+            save()
+        }
+
+    /**
+     * Every remote host to try, primary first, without duplicates and without
+     * blanks. One engine is built per entry, so a host that the user pointed
+     * the primary at is not dialled twice.
+     */
+    val remoteServerUrls: List<String>
+        get() = listOfNotNull(serverUrl, fallbackServerUrl)
+            .map { it.trim().trimEnd('/') }
+            .filter { it.isNotBlank() }
+            .distinct()
 
     var invidiousUrl: String?
         get() = stored().invidiousUrl?.takeIf { it.isNotBlank() }

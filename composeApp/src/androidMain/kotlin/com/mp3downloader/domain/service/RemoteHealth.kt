@@ -40,21 +40,36 @@ object RemoteHealth {
     val isWarm: Boolean
         get() = lastOkAt > 0L && System.currentTimeMillis() - lastOkAt < WARM_TTL_MS
 
-    /** Probes the configured host. Serialised, so overlapping callers share one request. */
+    /**
+     * Probes the configured hosts, primary first, stopping at the first that
+     * answers. Serialised, so overlapping callers share one request.
+     *
+     * Falls through to the second host on purpose. If it only ever probed the
+     * primary, then a Railway outage would leave [isWarm] false, which makes
+     * the engine chain try the dead Invidious instance first and burn its
+     * ~25 s timeout before reaching the host that actually works.
+     */
     suspend fun refresh(): Boolean = mutex.withLock {
-        val server = RemoteConfig.serverUrl
-        if (server.isNullOrBlank()) return false
-        val ok = withContext(Dispatchers.IO) {
-            runCatching {
-                val response: HttpResponse = client.get("$server/api/health")
-                response.status.value in 200..299
-            }.getOrElse {
-                AppLog.w(TAG, "health probe failed: ${it.message}")
-                false
+        var ok = false
+        var warmed: String? = null
+        for (server in RemoteConfig.remoteServerUrls) {
+            val probeOk = withContext(Dispatchers.IO) {
+                runCatching {
+                    val response: HttpResponse = client.get("$server/api/health")
+                    response.status.value in 200..299
+                }.getOrElse {
+                    AppLog.w(TAG, "health probe failed for $server: ${it.message}")
+                    false
+                }
+            }
+            if (probeOk) {
+                ok = true
+                warmed = server
+                break
             }
         }
         lastOkAt = if (ok) System.currentTimeMillis() else 0L
-        if (ok) AppLog.d(TAG, "server warm: $server")
+        if (ok) AppLog.d(TAG, "server warm: $warmed")
         ok
     }
 }
