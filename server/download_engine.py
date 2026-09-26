@@ -211,18 +211,26 @@ def ordered_clients():
 # y un client "degradado" tiene éxito igualmente, así que el bucle se queda
 # con él y nunca llega al bueno.
 #
-# Medido el 2026-09-25 con ac7KhViaVqc (tráiler de Sintel, 54 s):
-#   mweb              -> 8 formatos: 1920x818, 1280x546, 640x272, 256x110, audio
-#   android           -> 1 formato : 640x272  (el muxed de 360p, y nada más)
-#   android_vr        -> 1 formato : 640x272
-#   web / tv / ios    -> 0 formatos (bloqueados desde IP de datacenter)
+# Medido el 2026-09-26 con XqD0oCHLIF8 (opening de Solo Leveling, 101 s),
+# yt-dlp 2026.8.19 limpio (la misma versión que Railway), sin cookies ni
+# PO token. Formatos de vídeo que expone cada client:
 #
-# Con `android` primero, pedir 720p devolvía 360p sin intentar nada más. Por eso
-# mweb va el primero aquí aunque en la lista de audio llegue en quinto lugar.
+#   tv_embedded  -> escalera COMPLETA: 144p..1080p en mp4/avc1 (itag 137 es
+#                   1920x1080) más audio itag 140. Descarga verificada con el
+#                   selector del servidor: 1920x1080, 35,4 MB, h264, sin
+#                   cookies, sin PO token y sin provider.
+#   android      -> UN formato: el muxed itag 18 de 640x360, y nada más.
+#   mweb         -> 0 formatos ese día (solo storyboards); otros días dio 8.
+#   tv / web / ios -> 0 formatos o error desde IP de datacenter.
+#
+# Con el orden anterior (mweb primero, android segundo), mweb fallaba, android
+# "tenía éxito" con el muxed de 360p y el bucle se quedaba ahí: pedir 720p o
+# 1080p devolvía 360p real. tv_embedded va primero porque es el único que
+# expone la escalera alta sin token; android queda de red de seguridad.
 VIDEO_CLIENTS = [
+    "tv_embedded",
     "mweb",
     "android",
-    "tv_embedded",
     "tv",
     "ios",
     "web",

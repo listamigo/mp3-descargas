@@ -828,12 +828,20 @@ class APIHandler(BaseHTTPRequestHandler):
             workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
             try:
                 logger.info(f"Vídeo {video_id} por proxy {proxy}")
-                # Escalera de clients: primero la lista completa, que es la
-                # unica que puede traer 1080p, y si el fallo es de token o
-                # cookies se reintenta con `android` a secas, que es el unico
-                # que no lo pide. Sin este suelo, pedir 1080p devolvia 502:
-                # la lista entera cae junta y no saca ni el muxed de 360p.
-                for clients in (None, "android"):
+                # Escalera de clients, UNO POR COMANDO. Medido el 2026-09-26 con
+                # XqD0oCHLIF8 y yt-dlp 2026.8.19 limpio:
+                #   tv_embedded a secas -> escalera completa 144p..1080p y
+                #                 descarga real de 1920x1080 SIN PO token.
+                #   lista de clients   -> exige PO token para el conjunto y no
+                #                 extrae nada (mismo comportamiento que rompio
+                #                 el MP3 en c88bd97, revertido en 016536a).
+                #   android a secas -> solo el muxed itag 18 de 640x360.
+                # Por eso primero tv_embedded (el único que da >360p) y si el
+                # fallo es de token/cookies se cae a android, que es el suelo
+                # de 360p que ya funcionaba. Antes la escalera era (lista
+                # completa, android): la lista caia por token y el resultado
+                # era siempre 360p, pidieras 720p o 1080p.
+                for clients in ("tv_embedded", "android"):
                     cmd = _proxy_cmd_video(video_id, proxy, quality, workdir,
                                            clients=clients,
                                            max_bytes=self.VIDEO_MAX_BYTES)
