@@ -1,5 +1,7 @@
 package com.mp3downloader.data.engine
 
+import com.mp3downloader.data.engine.MediaKind
+
 import com.mp3downloader.data.dto.YtDlpSearchJson
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
@@ -83,7 +85,9 @@ class YtDlpProcessEngine : DownloadEngine {
 
     override fun download(
         song: Song,
-        outputDir: String
+        outputDir: String,
+        media: MediaKind,
+        quality: Int
     ): Flow<DownloadResult> = flow {
         emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, 0f))
 

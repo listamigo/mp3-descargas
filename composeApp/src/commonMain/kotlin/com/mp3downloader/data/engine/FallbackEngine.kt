@@ -128,9 +128,29 @@ class FallbackEngine(
         ))
     }
 
-    override fun download(song: Song, outputDir: String): Flow<DownloadResult> = flow {
+    override fun download(
+        song: Song,
+        outputDir: String,
+        media: MediaKind,
+        quality: Int
+    ): Flow<DownloadResult> = flow {
         val errors = mutableListOf<String>()
         var cancelled = false
+
+        // Un vídeo solo lo saben producir los motores remotos. Invidious y Piped
+        // se quedarían en la cadena y devolverían un MP3 para una petición que
+        // pidió un MP4, así que se descartan aquí con un mensaje claro en vez de
+        // fallar más tarde con un archivo que no es lo que se pidió.
+        val engines = orderedEngines().filter {
+            media != MediaKind.VIDEO || it.supportsVideo()
+        }
+        if (engines.isEmpty()) {
+            emit(DownloadResult(
+                song.id, DownloadStatus.FAILED,
+                error = "Ningún servidor disponible puede entregar vídeo."
+            ))
+            return@flow
+        }
 
         // Igual que en search: despertar el host remoto en segundo plano. Sin
         // esto, una descarga que no viene precedida de una búsqueda reciente
@@ -140,7 +160,7 @@ class FallbackEngine(
 
         // Primera pasada: intentar cada motor una vez
         val attempts = mutableListOf<Pair<DownloadEngine, Int>>()
-        orderedEngines().forEachIndexed { idx, engine ->
+        engines.forEachIndexed { idx, engine ->
             // Primer intento
             attempts.add(engine to (idx + 1)) // +1 indica intento 1
         }
@@ -151,7 +171,7 @@ class FallbackEngine(
             var errorMsg: String? = null
 
             try {
-                engine.download(song, outputDir).collect { result ->
+                engine.download(song, outputDir, media, quality).collect { result ->
                     if (result.status == DownloadStatus.COMPLETED) {
                         emit(result)
                         succeeded = true
@@ -199,7 +219,7 @@ class FallbackEngine(
                     var retryError: String? = null
 
                     try {
-                        engine.download(song, outputDir).collect { result ->
+                        engine.download(song, outputDir, media, quality).collect { result ->
                             if (result.status == DownloadStatus.COMPLETED) {
                                 emit(result)
                                 retrySucceeded = true

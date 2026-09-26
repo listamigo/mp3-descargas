@@ -2,6 +2,7 @@ package com.mp3downloader.data.repository
 
 import com.mp3downloader.data.engine.DownloadEngine
 import com.mp3downloader.data.engine.DownloadResult
+import com.mp3downloader.data.engine.MediaKind
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
 import com.mp3downloader.domain.repository.SongRepository
@@ -52,8 +53,13 @@ class SongRepositoryImpl(
         return engine.getAudioStreamUrl(song)
     }
 
-    override fun download(song: Song, outputDir: String): Flow<DownloadResult> {
-        return engine.download(song, outputDir)
+    override fun download(
+        song: Song,
+        outputDir: String,
+        media: MediaKind,
+        quality: Int
+    ): Flow<DownloadResult> {
+        return engine.download(song, outputDir, media, quality)
     }
 
     override suspend fun cancelDownload(songId: String) {

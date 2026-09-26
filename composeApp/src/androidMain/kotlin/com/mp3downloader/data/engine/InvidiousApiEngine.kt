@@ -165,7 +165,9 @@ class InvidiousApiEngine : DownloadEngine {
 
     override fun download(
         song: Song,
-        outputDir: String
+        outputDir: String,
+        media: MediaKind,
+        quality: Int
     ): Flow<DownloadResult> = flow {
         val audioUrlResult = getAudioStreamUrl(song)
         if (audioUrlResult.isFailure) {

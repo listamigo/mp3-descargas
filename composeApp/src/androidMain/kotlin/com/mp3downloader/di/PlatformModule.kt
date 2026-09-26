@@ -16,10 +16,17 @@ import org.koin.dsl.module
 
 actual val platformModule: Module = module {
     single<DownloadEngine> {
-        // Un motor por host, en orden: si el principal cae, FallbackEngine pasa
+        // Un motor por rol, en orden: si el principal cae, FallbackEngine pasa
         // al siguiente. Render va segundo porque su arranque en frio es mas
         // lento, pero es el que sobrevive a que Railway se quede sin credito.
-        val remote = RemoteConfig.remoteServerUrls.map { RemoteServerEngine(it) }
+        //
+        // El host se pasa como provider y no como String porque Koin construye
+        // esta cadena una sola vez por proceso: con la URL capturada aqui, un
+        // cambio en Ajustes no llegaba a los motores hasta reiniciar la app.
+        val remote = listOf(
+            RemoteServerEngine { RemoteConfig.serverUrl },
+            RemoteServerEngine { RemoteConfig.fallbackServerUrl }
+        )
         val invidious = InvidiousApiEngine()
         val engines = mutableListOf<DownloadEngine>()
         // Orden: los servidores remotos van primero y en prioridad, Render

@@ -40,28 +40,28 @@ data class RemoteSearchItem(
 private val remoteJson = Json { ignoreUnknownKeys = true }
 
 /**
- * @param baseUrl host this instance talks to. One engine is built per host so
- *   the chain can fall through from Railway to Render. When null it follows
- *   [RemoteConfig.serverUrl], which is what a single-server setup wants.
+ * @param host host this instance talks to, resolved on **every** call instead of
+ *   being captured at construction time. Koin builds the engine chain once per
+ *   process, so a URL frozen in the constructor would keep pointing at the old
+ *   host until the app was restarted, and a server changed in Settings would
+ *   look like it had not been saved. One engine per role, so the chain can fall
+ *   through from Railway to Render.
  */
-class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
+class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.serverUrl }) : DownloadEngine {
 
     /**
-     * A name that says which host this is, so the fallback log lines point at
-     * the backend that actually failed instead of printing the same
-     * "RemoteServerEngine" twice.
+     * A name that says which host this is, so the fallback log lines point at the
+     * backend that actually failed instead of printing the same
+     * "RemoteServerEngine" twice. Also a getter for the same reason as [host].
      */
-    val label: String = baseUrl
-        ?.substringAfter("://")
-        ?.substringBefore("/")
-        ?: "Remoto"
+    val label: String
+        get() = server()?.substringAfter("://")?.substringBefore("/") ?: "Remoto"
 
     /**
      * Resolved per call rather than cached: a Settings change has to reach the
      * engines without restarting the app.
      */
-    private fun server(): String? =
-        baseUrl ?: RemoteConfig.serverUrl
+    private fun server(): String? = host()
 
     /**
      * Tripped by the engine when a request to this host fails outright, read
@@ -195,14 +195,28 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
                 return@flow
             }
 
-        emit(DownloadResult(song.id, DownloadStatus.DOWNLOADING, 0f))
+        val isVideo = media == MediaKind.VIDEO
+
+        // El MP4 no existe en el servidor hasta que yt-dlp lo ha descargado y
+        // ffmpeg lo ha fusionado, y las cabeceras no salen hasta entonces: la
+        // respuesta empieza cuando el fichero ya está listo. Anunciar
+        // "Descargando 0%" durante esa espera parece una descarga colgada, así
+        // que el estado dice "preparando" y solo pasa a "descargando" cuando
+        // empiezan a llegar bytes. El MP3 no se toca: su respuesta es un stream
+        // en vivo y siempre se vio así.
+        emit(
+            DownloadResult(
+                songId = song.id,
+                status = if (isVideo) DownloadStatus.CONVERTING else DownloadStatus.DOWNLOADING,
+                progress = 0f
+            )
+        )
 
         if (!isValidYouTubeId(song.id)) {
             emit(DownloadResult(song.id, DownloadStatus.FAILED, error = "ID de video inválido."))
             return@flow
         }
 
-        val isVideo = media == MediaKind.VIDEO
         val safeTitle = sanitizeFileName(song.title)
         val outputFile = File(outputDir, "$safeTitle.${if (isVideo) "mp4" else "mp3"}")
         // Un MP4 pesa bastante más que el MP3 del mismo vídeo: un 1080p de
@@ -262,6 +276,21 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
                     error = "Archivo demasiado grande para descargar (máx ${sizeLimit / 1048576} MB)."))
                 return@flow
             }
+
+            // Cabeceras recibidas: el fichero ya está preparado y empieza a
+            // transferred. Sin Content-Length no hay porcentaje honesto que
+            // enseñar, así que se pasa a la barra indeterminada en vez de un 0 %
+            // que no se mueve nunca.
+            emit(
+                DownloadResult(
+                    songId = song.id,
+                    status = DownloadStatus.DOWNLOADING,
+                    progress = if (totalBytes > 0) 0f else -1f,
+                    downloadedBytes = 0L,
+                    bytesPerSecond = 0L
+                )
+            )
+
             var downloadedBytes = 0L
             val bufferSize = 8192
             var lastEmitTime = 0L

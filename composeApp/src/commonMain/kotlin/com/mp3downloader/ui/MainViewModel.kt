@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mp3downloader.data.engine.CANCELLED_ERROR
 import com.mp3downloader.data.engine.SEARCH_PAGE_SIZE
+import com.mp3downloader.data.engine.MediaKind
 import com.mp3downloader.data.repository.HistoryRepository
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.DownloadTask
@@ -296,13 +297,18 @@ class MainViewModel(
         }
     }
 
-    fun download(song: Song) {
+    fun download(song: Song, media: MediaKind = MediaKind.AUDIO, quality: Int = 0) {
         val alreadyActive = _downloads.value.any {
             it.song.id == song.id && (it.status == DownloadStatus.QUEUED || it.status == DownloadStatus.DOWNLOADING)
         }
         if (alreadyActive) return
 
-        val task = DownloadTask(song = song, status = DownloadStatus.QUEUED)
+        val task = DownloadTask(
+            song = song,
+            status = DownloadStatus.QUEUED,
+            media = media,
+            quality = quality
+        )
         _downloads.value = _downloads.value.filter { it.song.id != song.id } + task
 
         _selectedTab.value = AppTab.DOWNLOADS
@@ -315,7 +321,7 @@ class MainViewModel(
                 downloadSemaphore.withPermit {
                     val outputDir = getOutputDirectory()
 
-                    repository.download(song, outputDir).collect { result ->
+                    repository.download(song, outputDir, media, quality).collect { result ->
                         // Capturar tamaño del archivo original antes de que outputPath
                         // se reemplace por un content:// URI (MediaStore en API 29+).
                         val savedFileSize = if (result.status == DownloadStatus.COMPLETED && result.outputPath != null) {
@@ -378,7 +384,7 @@ class MainViewModel(
             // Pequeño delay para dar tiempo a que la conexión se recupere
             viewModelScope.launch {
                 kotlinx.coroutines.delay(1000)
-                download(failedTask.song)
+                download(failedTask.song, failedTask.media, failedTask.quality)
             }
         }
     }
