@@ -36,7 +36,9 @@
 - Eliminar código "que parece inútil" sin preguntar.
 - Introducir nuevas dependencias sin justificación.
 - Hacer cambios "por si acaso" o "por si mejora".
-- Modificar más de 3 archivos sin un plan explícito aprobado.
+- Modificar más de 3 archivos sin un plan explícito aprobado. *(Ver la excepción
+  vigente en "Excepciones autorizadas" más abajo: la regla sigue en pie para
+  cualquier otro trabajo.)*
 - Ignorar tests existentes. Si rompes uno, arréglalo ANTES de continuar.
 
 **NUNCA en QThread:**
@@ -52,6 +54,27 @@
 - Ejecutar tests antes y después de cada cambio.
 
 ---
+
+## 🔓 Excepciones autorizadas
+
+Una excepción aquí es un permiso **del administrador del repositorio**, concedido de
+forma explícita y por escrito. No es una puerta trasera general: cada excepción nombra
+el trabajo concreto para el que vale, caduca, y no deroga ninguna otra regla.
+
+### E-001 · Ampliación del alcance de archivos (caduca 2026-10-25)
+
+- **Concedida por:** el administrador del repositorio, por escrito, el 2026-09-25.
+- **Alcance:** únicamente la función de descarga de vídeo (calidad seleccionable,
+  MP4 además de MP3), con los cambios de servidor, cliente y despliegue que exija.
+- **Qué deroga:** el límite de "modificar más de 3 archivos sin un plan explícito
+  aprobado" durante este trabajo. El resto de reglas de este documento siguen
+  vigentes y completas, en particular la de commits atómicos, la de leer antes de
+  escribir y la de no tocar `desktop/` ni `deb-package/` sin pedirlo.
+- **Cómo se aplica igual:** el trabajo se sigue haciendo en commits atómicos y
+  reversibles, uno por pieza, cada uno compilando y verificándose por separado.
+  La excepción agranda el alcance, no la exigencia.
+- **Al vencer la fecha:** la excepción deja de aplicar automáticamente y vuelve a
+  regir el límite de 3 archivos.
 
 ## 📐 Protocolo de Trabajo
 
