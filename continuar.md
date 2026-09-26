@@ -621,7 +621,7 @@ alturas de tarjeta en px, dividiendo entre 1,75 para pasar a dp.
 
 Decisiones y por qué:
 
-- **La tarjeta no crece.** La primera versión添加ó una fila de controles debajo y
+- **La tarjeta no crece.** La primera versión añadió una fila de controles debajo y
   pasó de 85 dp a 120 dp. Lo que estaba sin aprovechar era el ancho del título, no
   la altura: los botones se comían un tercio y el título quedaba en una línea.
   Ahora el título usa las dos líneas que la tarjeta ya tenía y los controles siguen
@@ -694,3 +694,71 @@ Cómo abordarlo cuando se retome:
 Nota de codificación: el MP4 sale **h264 + aac** a propósito (ver
 `server/download_engine.py:video_format_selector`), pero el usuario tiene su
 propio reproductor y el códec no es un bloqueante para esta integración.
+
+## 2026-09-26 — Vídeo MP4, breaker de la vía directa y reality check de los hosts
+
+### Los dos hosts, medidos el 2026-09-26 (mismo vídeo `f665ujaFwHA`, 3:29)
+
+| Host | Resultado | Tiempo | Nota |
+|---|---|---|---|
+| **Railway** | **200, MP3 válido** | 64,7 s | 6.659.062 bytes, ffprobe: 208,09 s, 256 kbps, 44,1 kHz |
+| Render | 502 | 97,6 s | `Invidious fallback: no audio URL available` |
+
+**Railway es el único que sirve. Render no sirve y no es un problema de código.**
+Su log dice `Sign in to confirm you're not a bot` **teniendo cookies puestas**
+(1868 bytes restauradas de `COOKIES_B64`), o sea que lo rechaza la IP, no la
+sesión. Es lo mismo que dice `server/ANTI_BAN.md`: para datacenter hace falta
+proxy residencial, no más código. Un redeploy manual de Render a veces lo
+revive un rato, luego vuelve a caer.
+
+Prueba rápida de un host (vídeo de 3 min, no una película):
+
+```bash
+curl -s -o /tmp/prueba.bin -w "http=%{http_code} bytes=%{size_download} t=%{time_total}s\n" \
+  "https://mp3downloader-server-production.up.railway.app/api/download?videoId=f665ujaFwHA&quality=128"
+file /tmp/prueba.bin
+```
+
+### NO usar `BV1GJ411x7h7` (Big Buck Bunny) para comprobar nada
+
+Ahora responde `This video is unavailable` para **todo el mundo**, con cookies y
+sin ellas, desde esta red y desde los servidores. Perdí media hora diagnosticando
+un supposed fallo de IP que era el vídeo. Para canarios usar IDs sacados de
+`/api/search`, que además llegan vídeos que la app puede buscar de verdad.
+
+### El fallo grande: un vídeo malo tumbaba el host entero (`ec340bb`)
+
+`DIRECT_PATH_MIN_FAILURES = 1` (a propósito, está razonado en el código) abría
+el breaker de la vía directa **300 s** con un solo fallo. Durante el cooldown
+todas las peticiones se iban al proxy SOCKS5, que no ha funcionado ni una vez:
+o sea, **una descarga fallida lo convertía en 5 minutos de caída total** para los
+vídeos que sí se podían bajar. Y dentro del cooldown el contador no bajaba, así
+que sin éxitos que lo bajen (no puede haberlos si nadie prueba la vía directa) el
+host se quedaba encajonado.
+
+Ahora `is_video_level_error()` en `server/download_engine.py` distingue el fallo
+del vídeo (no disponible, privado, borrado, región) del bloqueo de IP, y solo
+este último abre el breaker. `Sign in to confirm you're not a bot` sigue
+abriéndolo, porque eso sí es la IP.
+
+### El sondeo de disponibilidad tiene que ser más rápido que el cliente (`925267a`)
+
+`/api/ready` tardaba 30,7 s en rendirse y la app solo espera 25 s: el sondeo
+llegaba tarde, la app se aburría y lanzaba la descarga igual. El servidor
+contesta en un 404 y la app se lo toma como Unknown y la lanza a descargar, que
+es justo lo que había que evitar. Ahora el deadline por defecto son 15 s y 8 s
+por cliente, así que responde antes de que la app se aburra.
+
+### Dos bugs de la lista de descargas (`925267a`)
+
+1. `MainViewModel.init` leía el historial y **sustituía** `_downloads` entero.
+   Como la lectura tarda, se comía las descargas recién lanzadas y la app ponía
+   "Sin descargas" con descargas corriendo de verdad. Ahora fusiona.
+2. Reintentar quitaba la fila y la recreaba 1 s después, así que el vídeo
+   desaparecía. Ahora `download()` sustituye la tarea en la misma operación.
+
+### Cookies
+
+El archivo local pesa **1868 bytes**. `POST /api/cookies` no sobrevive a un
+redeploy (disco efímero): para que persistan hay que actualizar `COOKIES_B64` en
+el panel del host, que es lo que lee el arranque al iniciar si el fichero no está.
