@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -121,105 +122,97 @@ fun SongListItem(
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(1.dp))
-                    // Artist and file weight share one line to keep the card
-                    // compact, but they do not get equal space: the artist
-                    // yields first so the size and bitrate, which people check
-                    // before starting a transfer, are never the part that gets
-                    // clipped.
-                    // The artist carries the weight and so absorbs every spare
-                    // pixel, which parks the file size hard against the right
-                    // edge whatever the artist name happens to be. Without the
-                    // weight the two only ended up flush when their combined
-                    // width happened to fill the column exactly.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        // End matters when there is no artist to stretch: with
-                        // nothing weighted in the row the size would otherwise
-                        // sit against the left edge.
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        displayArtist(song)?.let { artist ->
-                            Text(
-                                text = artist,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                // Two lines so the name is actually readable. It
-                                // only makes the card taller for the few results
-                                // whose artist genuinely does not fit on one.
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        expectedSizeLabel(song)?.let { size ->
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = size,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontSize = 9.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(4.dp))
-
-                if (isPreviewLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(30.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                } else {
-                    val active = isPreviewing && !isPaused
-                    IconButton(
-                        onClick = onPreviewClick,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = if (active)
-                                MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-                            else
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            contentColor = if (active)
-                                MaterialTheme.colorScheme.error
-                            else
-                                MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = if (active) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = when {
-                                active -> "Pausar"
-                                isPreviewing && isPaused -> "Reanudar"
-                                else -> "Escuchar"
-                            },
-                            modifier = Modifier.size(20.dp)
+                    // The artist used to share this line with the file size, and
+                    // with 157 dp of column the two together clipped the name to
+                    // "Artista desc...". The size now sits under the download
+                    // button, so the whole column belongs to the name.
+                    displayArtist(song)?.let { artist ->
+                        Spacer(modifier = Modifier.height(1.dp))
+                        Text(
+                            text = artist,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.width(4.dp))
 
-                Button(
-                    onClick = onDownloadClick,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    // Tight padding buys the text column ~8 dp of width, which
-                    // is a whole extra line of title on the longest results.
-                    contentPadding = PaddingValues(horizontal = 10.dp),
-                    modifier = Modifier.height(34.dp)
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Text(
-                        text = "Descargar",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isPreviewLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(30.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            val active = isPreviewing && !isPaused
+                            IconButton(
+                                onClick = onPreviewClick,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = if (active)
+                                        MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                                    else
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    contentColor = if (active)
+                                        MaterialTheme.colorScheme.error
+                                    else
+                                        MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = if (active) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                    contentDescription = when {
+                                        active -> "Pausar"
+                                        isPreviewing && isPaused -> "Reanudar"
+                                        else -> "Escuchar"
+                                    },
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
+
+                        Button(
+                            onClick = onDownloadClick,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) {
+                            Text(
+                                text = "Descargar",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // What the transfer will weigh, tucked under the button that
+                    // starts it. It is the number people check before committing
+                    // to a long download, so it stays on the card, just out of
+                    // the artist's way.
+                    expectedSizeLabel(song)?.let { size ->
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = size,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            textAlign = TextAlign.End
+                        )
+                    }
                 }
             }
         }

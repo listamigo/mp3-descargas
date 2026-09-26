@@ -629,13 +629,13 @@ Decisiones y por qué:
 - **`verticalAlignment = Alignment.CenterVertically` en la fila principal.** Estaba en
   `Top`, y con el título a 2 líneas el botón "Descargar" quedaba 10 dp por encima
   del centro de la tarjeta (centro medido 484 px contra 501 px del contenido).
-- **El peso va con `weight(1f)` en el artista + `Arrangement.End`.** Con
-  `fill = false` los dos textos se emparejaban y solo quedaban al borde por casualidad
-  cuando su suma coincidía con el ancho de la columna. El `Arrangement.End` hace
-  falta además porque al ocultarse el artista no queda ningún hijo con peso y el
-  texto se iba al borde izquierdo (x=169 en vez de x=430).
-- **Artista a 2 líneas, peso a 9 sp.** "256 kbps · 5,8 MB" a labelSmall no cabía con
-  el artista y quedaba en "Artista desc...". Se compacta a "5,8 MB · 256k".
+- **El peso del archivo pasa debajo del botón "Descargar"**, en una columna derecha
+  con `horizontalAlignment = Alignment.End`. Sharing line with the artist left each
+  of them about 78 dp on a 157 dp column, and the name clipped to "Artista desc...".
+  The column was not actually wider than the text column, the two texts were just
+  competing for the same run of pixels. Cost: 8 dp more per card (89 -> 97 dp).
+- **"5,8 MB · 256k" a 9 sp** en vez de "256 kbps · 5,8 MB" a labelSmall, que no cabía
+  junto al artista.
 - **`Artista desconocido` se oculta en la UI**, no en el servidor: lo produce
   `server/download_engine.py:1214` cuando no deduce el artista, y es lo bastante
   largo para truncarse y empujar el peso fuera de la fila. Filtrarlo en el cliente
