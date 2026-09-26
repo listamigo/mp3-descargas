@@ -243,7 +243,7 @@ def ordered_video_clients() -> list[str]:
     return list(VIDEO_CLIENTS)
 
 
-def _player_client_arg(clients: list[str]) -> str:
+def _player_client_arg(clients: "str | list[str]") -> str:
     """Valor de `--extractor-args youtube:player_client=...` con la lista completa.
 
     Fix 2026-09-26: la ruta del proxy forzaba `player_client=android` en los
@@ -258,6 +258,8 @@ def _player_client_arg(clients: list[str]) -> str:
     yt-dlp recorre la lista internamente, así que una sola invocación prueba los
     siete en orden; no hace falta un bucle externo por client.
     """
+    if isinstance(clients, str):
+        clients = [clients]
     return "youtube:player_client=" + ",".join(clients)
 
 
@@ -616,6 +618,34 @@ def _fetch_free_proxies() -> list[str]:
     return proxies
 
 
+ANDROID_CLIENT = "android"
+"""Client que usan las rutas de AUDIO y los sondeos de proxy.
+
+No es por gusto, es por un comportamiento medido de yt-dlp: cuando se le pasa
+una LISTA de clients, exige un PO token para el conjunto y, si no lo consigue,
+no extrae nada en absoluto. Ni el audio ni el muxed de 360p, que son
+justamente los unicos formatos que no necesitan token.
+
+Medido en produccion el 2026-09-26 con 79ikolMBiRk: con la lista completa el
+MP3 devolvia 502 tras 88 s; con `android` a secas se descargaba en 24 s. Por eso
+el audio vuelve a `android` y el video, que si puede ganar calidad, prueba
+primero la lista completa y solo cae aqui si el fallo es de auth.
+"""
+
+
+def _is_auth_error(text: str) -> bool:
+    """El fallo es "no me dan token/cookies", no "este video no existe"."""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in (
+        "po token",
+        "sign in to confirm",
+        "not a bot",
+        "for the authentication",
+        "pass cookies",
+        "cookies-from-browser",
+    ))
+
+
 def _try_with_proxy(video_id: str) -> str | None:
     """Intenta obtener URL de audio vía proxies SOCKS5 gratuitos.
 
@@ -649,7 +679,7 @@ def _try_with_proxy(video_id: str) -> str | None:
                 "yt-dlp", "--no-warnings",
                 "--proxy", proxy,
                 "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", _player_client_arg(ordered_clients()),
+                "--extractor-args", _player_client_arg(ANDROID_CLIENT),
                 "-f", "bestaudio/best",
                 "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
                 "--retries", str(YTDLP_RETRIES),
@@ -687,7 +717,7 @@ def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[st
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
-        "--extractor-args", _player_client_arg(ordered_clients()),
+        "--extractor-args", _player_client_arg(ANDROID_CLIENT),
         "-f", "bestaudio/best",
         "--no-playlist", "--no-part",
     ]
@@ -738,7 +768,8 @@ def video_format_selector(quality: int) -> str:
     )
 
 
-def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str) -> list[str]:
+def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
+                     clients: list[str] | None = None) -> list[str]:
     """Comando yt-dlp para descargar VÍDEO completo vía proxy SOCKS5.
 
     No reutiliza `_proxy_cmd` a propósito: allí el formato es audio y la salida
@@ -750,7 +781,7 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str) -> l
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
-        "--extractor-args", _player_client_arg(ordered_video_clients()),
+        "--extractor-args", _player_client_arg(clients or ordered_video_clients()),
         "-f", video_format_selector(quality),
         "--merge-output-format", "mp4",
         "--no-playlist", "--no-part",
@@ -800,7 +831,7 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
                 "yt-dlp", "--no-warnings",
                 "--proxy", proxy,
                 "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", _player_client_arg(ordered_clients()),
+                "--extractor-args", _player_client_arg(ANDROID_CLIENT),
                 "-f", "bestaudio/best",
                 "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
                 "--retries", str(YTDLP_RETRIES),

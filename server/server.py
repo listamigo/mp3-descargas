@@ -53,6 +53,7 @@ from download_engine import (
     record_direct_success,
     is_video_level_error,
     is_bot_challenge,
+    _is_auth_error,
     invidious_get_audio_url,
 )
 
@@ -771,18 +772,31 @@ class APIHandler(BaseHTTPRequestHandler):
             workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
             try:
                 logger.info(f"Vídeo {video_id} por proxy {proxy}")
-                cmd = _proxy_cmd_video(video_id, proxy, quality, workdir)
-                proc = subprocess.run(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=timeout_s,
-                )
-                merged = self._merged_video_in(workdir)
-                if merged:
-                    os.replace(merged, download_path)
-                    self._cleanup_download_cache()
-                    self._serve_file(download_path, "video/mp4", video_id)
-                    return
-                last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
+                # Escalera de clients: primero la lista completa, que es la
+                # unica que puede traer 1080p, y si el fallo es de token o
+                # cookies se reintenta con `android` a secas, que es el unico
+                # que no lo pide. Sin este suelo, pedir 1080p devolvia 502:
+                # la lista entera cae junta y no saca ni el muxed de 360p.
+                for clients in (None, "android"):
+                    cmd = _proxy_cmd_video(video_id, proxy, quality, workdir,
+                                           clients=clients)
+                    proc = subprocess.run(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=timeout_s,
+                    )
+                    merged = self._merged_video_in(workdir)
+                    if merged:
+                        os.replace(merged, download_path)
+                        self._cleanup_download_cache()
+                        self._serve_file(download_path, "video/mp4", video_id)
+                        return
+                    last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
+                    if not _is_auth_error(last_err):
+                        break
+                    logger.info(
+                        "Vídeo %s: fallo de token/cookies, reintento con android",
+                        video_id,
+                    )
                 blocked.add(proxy)
                 logger.warning(f"Vídeo falló por proxy {proxy}: {last_err}")
             except subprocess.TimeoutExpired:
