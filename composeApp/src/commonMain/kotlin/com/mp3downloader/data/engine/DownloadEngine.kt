@@ -47,8 +47,8 @@ enum class MediaKind { AUDIO, VIDEO }
  * que YouTube tenga publicado en ese momento, y el cliente necesita un total
  * fiable para que el porcentaje signifique algo. 1080p es el techo: por encima
  * YouTube solo publica VP9/AV1 y el merge a MP4 dejaría de ser una copia de
- * pistas. Del peso se ocupa el cliente, que rechaza el fichero por encima de
- * 500 MB.
+ * pistas. Del peso se encargan los dos lados: el servidor rechaza antes de
+ * descargar si no cabe, y el cliente comprueba el total al recibirlo.
  */
 val VIDEO_QUALITIES: List<Int> = listOf(240, 360, 480, 720, 1080)
 

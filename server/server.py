@@ -421,6 +421,18 @@ class APIHandler(BaseHTTPRequestHandler):
     )
     DOWNLOAD_CACHE_MAX_AGE_H = 48
     DOWNLOAD_CACHE_MAX_FILES = 30
+    # Tope de peso para un vídeo. El cliente tiene el mismo número: si solo
+    # lo comprobara el cliente, el servidor se habría gastado la descarga
+    # entera y el disco para que al final la app lo tirase. 1 GB es una peli
+    # larga a 1080p; a partir de ahí el merge (que necesita el doble de disco
+    # mientras ocurre) ya no cabe cómodo en el plan gratis del host.
+    VIDEO_MAX_BYTES = int(os.environ.get("VIDEO_MAX_BYTES", str(1024 * 1024 * 1024)))
+    # Presupuesto total de la caché, por encima del número de ficheros. Con 30
+    # ficheros de 1 GB el disco se llenaba igualmente: contar ficheros no
+    # acota nada cuando cada uno pesa mucho. Es lo que tumbó el contenedor.
+    DOWNLOAD_CACHE_MAX_TOTAL_BYTES = int(
+        os.environ.get("DOWNLOAD_CACHE_MAX_TOTAL_BYTES", str(2 * 1024 * 1024 * 1024))
+    )
 
     def _get_download_path(self, video_id: str, ext: str = ".mp3", quality: int = 0) -> str:
         safe_id = video_id.replace("/", "_").replace("..", "_")
@@ -478,6 +490,22 @@ class APIHandler(BaseHTTPRequestHandler):
                 if f.endswith(".mp3") or f.endswith(".mp4")
             ]
             if len(files) <= self.DOWNLOAD_CACHE_MAX_FILES:
+                # Aunque quepan en número, pueden no caber en peso: se borra lo
+                # más viejo hasta que el total entre en el presupuesto. Con el
+                # tope de ficheros solo, 30 vídeos de 1 GB llenaban el disco del
+                # host y lo dejaban sin responder.
+                total = sum(os.path.getsize(p) for p, _ in files)
+                if total <= self.DOWNLOAD_CACHE_MAX_TOTAL_BYTES:
+                    return
+                files.sort(key=lambda x: x[1])
+                for path, _ in files:
+                    try:
+                        total -= os.path.getsize(path)
+                        os.remove(path)
+                    except OSError:
+                        continue
+                    if total <= self.DOWNLOAD_CACHE_MAX_TOTAL_BYTES:
+                        break
                 return
             files.sort(key=lambda x: x[1])
             for path, _ in files[:len(files) - self.DOWNLOAD_CACHE_MAX_FILES]:
@@ -504,6 +532,76 @@ class APIHandler(BaseHTTPRequestHandler):
             return None
         return None
 
+    def _video_size_estimate(self, video_id: str, quality: int) -> int | None:
+        """Peso estimado del MP4 que se pediría, sin descargar nada.
+
+        Una consulta de metadatos (yt-dlp -J) que se resuelve en 6-20 s: hay
+        que encontrar un cliente que funcione primero, y si el primero está
+        bloqueado prueba el siguiente. Sirve para una cosa: decidir ANTES de
+        empezar si el vídeo cabe en el tope. Sin esto, una peli que no cabe se
+        descarga entera, se mergea y luego la app la rechaza al final: minutos
+        de servidor y disco tirados.
+
+        Devuelve None cuando no se puede saber (todos los clientes fallan, el
+        vídeo no expone el tamaño). None nunca bloquea la descarga: el peso
+        real se comprueba después del merge, que es la red de seguridad.
+        """
+        fmt = self._video_format_selector(quality)
+        url = f"https://youtube.com/watch?v={video_id}"
+        deadline = float(os.environ.get("SIZE_PROBE_DEADLINE", "30"))
+        start = time.monotonic()
+
+        for client in ordered_video_clients():
+            if time.monotonic() - start > deadline:
+                break
+            cmd = _base_cmd(client) + ["-J", "--no-playlist", "-f", fmt, url]
+            try:
+                proc = subprocess.run(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=max(5.0, deadline - (time.monotonic() - start)),
+                )
+            except subprocess.TimeoutExpired:
+                break
+            except Exception as e:
+                logger.debug(f"Estimación de tamaño falló con {client}: {e}")
+                continue
+            if proc.returncode != 0:
+                continue
+            try:
+                info = json.loads((proc.stdout or b"").decode(errors="replace"))
+            except (ValueError, AttributeError):
+                continue
+            # Con un selector de dos pistas, `requested_formats` trae el vídeo y
+            # el audio por separado y el peso final es la suma de los dos. Con un
+            # formato único, el peso está en el propio objeto.
+            total = 0
+            for f in (info.get("requested_formats") or [info]):
+                try:
+                    total += int(f.get("filesize") or f.get("filesize_approx") or 0)
+                except (TypeError, ValueError):
+                    continue
+            if total > 0:
+                logger.info(f"Tamaño estimado para {video_id} ({quality}p): "
+                            f"{total} bytes")
+                return total
+        logger.info(f"Sin tamaño estimado para {video_id}; seProcede sin comprobar")
+        return None
+
+    def _reject_too_big(self, video_id: str, quality: int, size: int) -> None:
+        """Corta en seco lo que no cabe, sin haber descargado un solo byte."""
+        limit_mb = self.VIDEO_MAX_BYTES // (1024 * 1024)
+        size_mb = size // (1024 * 1024)
+        logger.info(f"Rechazado {video_id} ({quality}p): {size_mb} MB > {limit_mb} MB")
+        self._json(413, {
+            "error": "El vídeo supera el límite de tamaño del servidor",
+            "detail": f"ocupa unos {size_mb} MB y el límite es {limit_mb} MB. "
+                      "Prueba con una calidad más baja.",
+            "videoId": video_id,
+            "quality": quality,
+            "sizeBytes": size,
+            "limitBytes": self.VIDEO_MAX_BYTES,
+        })
+
     def _proxy_video_download(self, video_id: str, title: str, quality: int) -> None:
         """Descarga el vídeo a fichero y lo sirve con Content-Length.
 
@@ -519,6 +617,14 @@ class APIHandler(BaseHTTPRequestHandler):
         os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
 
         if self._serve_file(download_path, "video/mp4", video_id):
+            return
+
+        # Antes de gastar una descarga entera, mirar cuánto va a ocupar. Es la
+        # diferencia entre "no se puede" en 2 segundos y "no se puede" después de
+        # descargar y mergear una peli entera.
+        estimated = self._video_size_estimate(video_id, quality)
+        if estimated and estimated > self.VIDEO_MAX_BYTES:
+            self._reject_too_big(video_id, quality, estimated)
             return
 
         fmt = self._video_format_selector(quality)
@@ -553,6 +659,17 @@ class APIHandler(BaseHTTPRequestHandler):
                 )
                 merged = self._merged_video_in(workdir)
                 if proc.returncode == 0 and merged:
+                    # Tope real: la estimación de antes es una predicción y el
+                    # tamaño de verdad puede salir mayor. Si aun así se pasa, el
+                    # fichero se borra en vez de quedarse ocupando disco.
+                    real_size = os.path.getsize(merged)
+                    if real_size > self.VIDEO_MAX_BYTES:
+                        try:
+                            os.remove(merged)
+                        except OSError:
+                            pass
+                        self._reject_too_big(video_id, quality, real_size)
+                        return
                     os.replace(merged, download_path)
                     self._cleanup_download_cache()
                     record_success(client)

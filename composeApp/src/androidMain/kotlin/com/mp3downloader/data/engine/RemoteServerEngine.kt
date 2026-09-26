@@ -80,11 +80,16 @@ class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.server
     private val maxDownloadBytes = 250L * 1024 * 1024
 
     /**
-     * Ceiling for video: double the audio one, 500 MB. That is roughly forty
-     * minutes of 1080p, and past it the transfer takes longer than anyone
-     * waits, so refusing up front beats filling the device.
+     * Ceiling for video: 1 GB, the same number the server enforces.
+     *
+     * They have to agree. The server checks the estimated size before it
+     * downloads anything, and checks the real size again after the merge, so a
+     * video that cannot fit is refused in seconds instead of after the host
+     * has spent minutes and disk on it. This is the last line of defence for
+     * the device itself, and the number is duplicated there on purpose: if the
+     * two ever disagree the server rejects the transfer and this never sees it.
      */
-    private val maxVideoBytes = 500L * 1024 * 1024
+    private val maxVideoBytes = 1024L * 1024 * 1024
 
     /**
      * Bytes per second of the encoded MP3, used to turn a duration into a size.
@@ -220,8 +225,8 @@ class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.server
         val safeTitle = sanitizeFileName(song.title)
         val outputFile = File(outputDir, "$safeTitle.${if (isVideo) "mp4" else "mp3"}")
         // Un MP4 pesa bastante más que el MP3 del mismo vídeo: un 1080p de
-        // tres minutos ronda los 40-60 MB, y una hora Easily pasa de 500 MB.
-        // El tope de audio (250 MB) rechazaría casi todo lo que se pida como
+        // tres minutos ronda los 40-60 MB y una peli larga pasa de 1 GB. El
+        // tope de audio (250 MB) rechazaría casi todo lo que se pida como
         // vídeo, así que el guard usa un límite propio.
         val sizeLimit = if (isVideo) maxVideoBytes else maxDownloadBytes
 
