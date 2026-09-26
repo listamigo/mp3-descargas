@@ -762,3 +762,124 @@ por cliente, así que responde antes de que la app se aburra.
 El archivo local pesa **1868 bytes**. `POST /api/cookies` no sobrevive a un
 redeploy (disco efímero): para que persistan hay que actualizar `COOKIES_B64` en
 el panel del host, que es lo que lee el arranque al iniciar si el fichero no está.
+
+---
+
+# 5. CIERRE DE SESIÓN 2026-09-26 (lo último, léelo primero)
+
+## 5.1 Dónde está el código
+
+- Rama `main`, HEAD `333cf58`. El último commit con código es **`35f2100`**; los
+  vacíos existen para forzar builds (ver 5.4).
+- Railway sirve `build_commit: 333cf58` con el APK instalado en el móvil.
+- Todo pushed. Nunca se ha hecho force-push.
+
+| Commit | Qué hace |
+|---|---|
+| `6e40f4e` | El error dice la causa real (challenge de bot) en vez de culpar a Invidious |
+| `c88bd97` | La ruta del proxy deja de forzar `player_client=android` |
+| `016536a` | **Arregla la regresión de `c88bd97`**: escalera de clients y MP3 restaurado |
+| `76bbbf7` | La app dice la altura real del fichero, no la pedida |
+| `35f2100` | El tope de 1 GB se aplica también en la ruta del proxy |
+| `897640b`, `9200bac`, `0afd546`, `333cf58` | Commits vacíos, solo para forzar build |
+
+## 5.2 El hallazgo que explica casi todo: el PO token
+
+Cuando yt-dlp recibe una **lista** de `player_client`, exige un PO token para el
+**conjunto**. Si no lo consigue, no extrae **nada**: ni el audio, ni el muxed de
+360p, que son los únicos formatos que no piden token.
+
+Medido en producción:
+
+```
+solo player_client=android   ->  640x360
+lista completa (7 clients)   ->  1920x1080, 1280x720, 854x480, 640x360, 426x240, 256x144
+```
+
+Conclusión: **`android` a secas es el único client que sobrevive sin token, y solo
+da 360p.** Por eso el 1080p nunca sale de esta infraestructura: no es un bug del
+selector, es que el formato alto no se puede pedir. Solo un PO token válido (IP no
+marcada) o un proxy residencial lo cambian.
+
+De ahí la escalera que hay ahora en el vídeo: se pide la lista completa y, si el
+fallo es de token o cookies, se reintenta con `android` en el mismo proxy. El
+audio y los sondeos de proxy se quedaron directamente en `android`
+(`ANDROID_CLIENT`), que es lo que hacía que el MP3 funcionara.
+
+## 5.3 Bugs encontrados y corregidos esta noche
+
+1. **El MP3 se rompió y no lo medí** (`c88bd97`). Al meter la lista completa en
+   las cuatro rutas del proxy se cayó el suelo que las hacía funcionar: 502 tras
+   88 s, cuando antes ese mismo vídeo se descargaba en 24 s. Corregido en
+   `016536a`. **Lección: un commit que toca las cuatro rutas del proxy hay que
+   medirlas las cuatro, no solo la que motivó el cambio.**
+2. **Un bug del propio arreglo, cazado por el test**: `ANDROID_CLIENT` es un
+   string y `",".join()` lo partía en `a,n,d,r,o,i,d`. Ahora
+   `_player_client_arg` acepta un string.
+3. **La app mentía con la calidad**: ponía "MP4 1080p" sobre un fichero de
+   640x360, porque el selector cae a su último término sin avisar. El servidor
+   ahora mide el MP4 con `ffprobe` y lo manda en `X-Video-Height`, y la app
+   etiqueta lo que hay en el disco.
+4. **El tope de 1 GB no se aplicaba a nada**: el chequeo post-merge estaba solo
+   en la vía directa, y como la directa está bloqueada, la ruta del proxy
+   servía sin mirar. Ahora `_enforce_video_size` es el único sitio donde se mira
+   el tamaño real y se usa en las dos rutas. Además las dos descargas pasan
+   `--max-filesize` a yt-dlp, que corta con los metadatos antes de bajar un byte,
+   y si eso pasa se responde 413 en vez de un 502.
+
+## 5.4 Trampa de Railway: "Redeploy" reconstruye el deployment viejo
+
+El botón de redeploy del panel reconstruye **el commit del deployment anterior**,
+no el HEAD. Por eso `c88bd97` estuvo una hora sin desplegar y se midió código
+viejo varias veces sin saberlo.
+
+- `build_commit` sale de `RAILWAY_GIT_COMMIT_SHA`, lo inyecta Railway en cada
+  build: **es fiable**, no se queda viejo. Se puede comprobar en `/api/health`.
+- Antes de medir nada, comprobar que `build_commit` es el commit que se cree
+  estar probando.
+- Solución usada: commit vacío para forzar un build nuevo. Tarda ~30 s.
+
+## 5.5 Estado medido ( Railway, 2026-09-26 madrugada)
+
+| Petición | Resultado |
+|---|---|
+| MP3 `79ikolMBiRk` | 200, 9.969.299 B, entre 6,2 s y 31 s |
+| MP4 pidiendo 1080p | 200, 16.025.318 B, entre 9,5 s y 40,4 s, `x-video-height: 360` |
+
+La variabilidad de 6 s a 40 s en la misma operación no es un bug: es qué proxy
+SOCKS5 gratuito toca. El cachear el último que funcionó (`_remember_working_proxy`)
+es lo que convierte esa lotería en algo utilizable.
+
+## 5.6 Lo que queda pendiente, con su estado real
+
+- **Proxy residencial**: lo único que arregla el 1080p y la fiabilidad. Decisión
+  del usuario, sin tomar. Todo lo demás es parche.
+- **Los 8 s de clients muertos**: probablemente el breaker ya los evita cuando
+  está abierto (el log salta directo a "Descarga proxy"), pero **no está
+  comprobado**. No darlo por hecho.
+- **El 0 % durante la búsqueda de proxy**: la UI no dice nada y parece un
+  cuelgue. Es cosmético, pero confunde. Pendiente.
+- **La estimación de tamaño previa nunca decide**: usa los clients directos para
+  sacar metadatos y desde una IP de datacenter no extraen nada, así que devuelve
+  `None` siempre (log: "Sin tamaño estimado; se procede sin comprobar"). El
+  límite ya no depende de ella gracias a `--max-filesize` y al chequeo
+  post-merge, pero la función es código muerto en producción.
+- **Errores de third party en inglés**: la app muestra el stderr de yt-dlp tal
+  cual. Se entiende, pero no está traducido.
+- **Los hosts se siguen marcando caídos** y la app cae a Invidious/Piped, que
+  están muertos. Con los dos hosts fuera, el resultado es un 0 % eterno.
+
+## 5.7 Lo que NO se hizo, y por qué
+
+- **Revertir a `5c039ea`**: descartado. Devuelve el bug del PO token provider
+  muerto (`PO_TOKEN_PROVIDER_URL` apuntando a `127.0.0.1:4416` sin proceso, que
+  rompía todas las descargas con 502 tras 67-78 s), pierde los commits de calidad
+  de vídeo y **no arregla un bloqueo de IP**, que es lo único que está fallando.
+- **Fallo mío reconocido**: apliqué `c88bd97` sin prever que rompía el MP3 y sin
+  medirlo. Se detectó tarde, cuando ya se habían hecho dos deployments.
+
+## 5.8 Estado sucio del repositorio
+
+`deb-package/usr/bin/mp3-downloader` aparece modificado en el working tree y
+`desktop/` tiene ficheros sin seguimiento. **No son de este trabajo**: no se han
+tocado ni stageado, y no deben subirse.
