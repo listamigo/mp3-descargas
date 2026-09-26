@@ -54,6 +54,7 @@ from download_engine import (
     is_video_level_error,
     is_bot_challenge,
     _is_auth_error,
+    _is_too_big_error,
     invidious_get_audio_url,
 )
 
@@ -683,15 +684,44 @@ class APIHandler(BaseHTTPRequestHandler):
         self._SIZE_ESTIMATE_CACHE[key] = (time.time(), None)
         return None
 
-    def _reject_too_big(self, video_id: str, quality: int, size: int) -> None:
-        """Corta en seco lo que no cabe, sin haber descargado un solo byte."""
+    def _enforce_video_size(self, path: str, video_id: str, quality: int) -> bool:
+        """Tope de tamano sobre el MP4 ya mergeado. True si se puede servir.
+
+        La estimacion previa es una prediccion y ademas, con la IP bloqueada,
+        devuelve None: el chequeo de antes no llega a decides nada. Este es el
+        unico sitio donde el tamano es real, asi que tiene que estar en TODAS
+        las rutas. Antes solo estaba en la directa, y como la directa esta
+        bloqueada, el limite de 1 GB no se aplicaba a ninguna descarga.
+        """
+        real_size = os.path.getsize(path)
+        if real_size <= self.VIDEO_MAX_BYTES:
+            return True
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        self._reject_too_big(video_id, quality, real_size)
+        return False
+
+    def _reject_too_big(self, video_id: str, quality: int,
+                        size: int | None) -> None:
+        """Corta en seco lo que no cabe, sin haber descargado un solo byte.
+
+        `size` es None cuando el corte lo ha hecho el propio yt-dlp con
+        `--max-filesize`: se sabe que no cabe, pero no cuanto ocupa, y
+        inventar un tamaño en el mensaje seria mentira.
+        """
         limit_mb = self.VIDEO_MAX_BYTES // (1024 * 1024)
-        size_mb = size // (1024 * 1024)
-        logger.info(f"Rechazado {video_id} ({quality}p): {size_mb} MB > {limit_mb} MB")
+        logger.info(f"Rechazado {video_id} ({quality}p): "
+                    f"{size} bytes frente al limite {self.VIDEO_MAX_BYTES}")
+        detail = (f"ocupa unos {size // (1024 * 1024)} MB y el límite es "
+                  f"{limit_mb} MB. Prueba con una calidad más baja."
+                  if size else
+                  f"supera el límite de {limit_mb} MB. Prueba con una calidad "
+                  "más baja.")
         self._json(413, {
             "error": "El vídeo supera el límite de tamaño del servidor",
-            "detail": f"ocupa unos {size_mb} MB y el límite es {limit_mb} MB. "
-                      "Prueba con una calidad más baja.",
+            "detail": detail,
             "videoId": video_id,
             "quality": quality,
             "sizeBytes": size,
@@ -746,6 +776,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     "-f", fmt,
                     "--merge-output-format", "mp4",
                     "--no-playlist", "--no-part",
+                    f"--max-filesize={self.VIDEO_MAX_BYTES}",
                     "-o", os.path.join(workdir, "v.%(ext)s"),
                     url,
                 ]
@@ -758,13 +789,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     # Tope real: la estimación de antes es una predicción y el
                     # tamaño de verdad puede salir mayor. Si aun así se pasa, el
                     # fichero se borra en vez de quedarse ocupando disco.
-                    real_size = os.path.getsize(merged)
-                    if real_size > self.VIDEO_MAX_BYTES:
-                        try:
-                            os.remove(merged)
-                        except OSError:
-                            pass
-                        self._reject_too_big(video_id, quality, real_size)
+                    if not self._enforce_video_size(merged, video_id, quality):
                         return
                     os.replace(merged, download_path)
                     self._cleanup_download_cache()
@@ -772,6 +797,9 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._serve_file(download_path, "video/mp4", video_id)
                     return
                 last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
+                if _is_too_big_error(last_err):
+                    self._reject_too_big(video_id, quality, None)
+                    return
                 record_failure(client)
                 logger.warning(f"Vídeo falló (client {client}): {last_err}")
             except subprocess.TimeoutExpired:
@@ -807,18 +835,24 @@ class APIHandler(BaseHTTPRequestHandler):
                 # la lista entera cae junta y no saca ni el muxed de 360p.
                 for clients in (None, "android"):
                     cmd = _proxy_cmd_video(video_id, proxy, quality, workdir,
-                                           clients=clients)
+                                           clients=clients,
+                                           max_bytes=self.VIDEO_MAX_BYTES)
                     proc = subprocess.run(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         timeout=timeout_s,
                     )
                     merged = self._merged_video_in(workdir)
                     if merged:
+                        if not self._enforce_video_size(merged, video_id, quality):
+                            return
                         os.replace(merged, download_path)
                         self._cleanup_download_cache()
                         self._serve_file(download_path, "video/mp4", video_id)
                         return
                     last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
+                    if _is_too_big_error(last_err):
+                        self._reject_too_big(video_id, quality, None)
+                        return
                     if not _is_auth_error(last_err):
                         break
                     logger.info(

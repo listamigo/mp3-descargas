@@ -646,6 +646,18 @@ def _is_auth_error(text: str) -> bool:
     ))
 
 
+def _is_too_big_error(text: str) -> bool:
+    """yt-dlp se niega a descargar porque el formato supera `--max-filesize`.
+
+    Es el corte bueno: no se ha bajado ni un byte. Si se trata como un fallo
+    normal, el cliente recibe un 502 genérico después de haber probado los
+    siete clients y varios proxies, cuando en realidad la respuesta correcta
+    es un 413 diciendo que el vídeo es demasiado grande.
+    """
+    lowered = (text or "").lower()
+    return "max-filesize" in lowered or "larger than max-filesize" in lowered
+
+
 def _try_with_proxy(video_id: str) -> str | None:
     """Intenta obtener URL de audio vía proxies SOCKS5 gratuitos.
 
@@ -769,7 +781,8 @@ def video_format_selector(quality: int) -> str:
 
 
 def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
-                     clients: list[str] | None = None) -> list[str]:
+                     clients: list[str] | None = None,
+                     max_bytes: int | None = None) -> list[str]:
     """Comando yt-dlp para descargar VÍDEO completo vía proxy SOCKS5.
 
     No reutiliza `_proxy_cmd` a propósito: allí el formato es audio y la salida
@@ -785,6 +798,11 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
         "-f", video_format_selector(quality),
         "--merge-output-format", "mp4",
         "--no-playlist", "--no-part",
+        # Tope que aplica el propio yt-dlp con los metadatos reales del
+        # formato. Corta antes de descargar en vez de tirar el fichero
+        # despues, que con la estimacion previa caida es la unica vez que se
+        # sabe el tamano antes de tener los bytes.
+        *([f"--max-filesize={max_bytes}"] if max_bytes else []),
         "-o", os.path.join(workdir, "v.%(ext)s"),
         f"https://youtube.com/watch?v={video_id}",
     ]
