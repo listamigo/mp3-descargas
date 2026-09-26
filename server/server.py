@@ -8,6 +8,8 @@ Endpoints:
   GET  /api/search     ?q=<query>            → Lista de canciones
   GET  /api/stream-url ?videoId=<id>         → URL directa de audio
   GET  /api/download   ?videoId=<id>&title=  → Stream del audio (proxy)
+  GET  /api/download   ?videoId=<id>&mode=video&quality=<360|720|1080>
+                                              → MP4 mergeado (Content-Length real)
   GET  /api/health                           → Estado del servidor
   POST /api/cookies                          → Subir cookies.txt
 """
@@ -16,9 +18,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import logging
+import tempfile
 import time
 
 from datetime import datetime
@@ -32,6 +36,7 @@ from download_engine import (
     COOKIES_FILE,
     _base_cmd,
     _proxy_cmd,
+    _proxy_cmd_video,
     _find_working_proxy,
     _remember_working_proxy,
     ordered_clients,
@@ -285,6 +290,21 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "Missing ?videoId="})
                     return
                 title = params.get("title", [""])[0] or "audio"
+                # ?mode=video&quality=720 descarga el MP4. Sin mode (o mode=audio)
+                # se comporta exactamente como antes, así que los clientes viejos
+                # no se ven afectados.
+                mode = (params.get("mode", ["audio"])[0] or "audio").lower()
+                if mode == "video":
+                    try:
+                        quality = int(params.get("quality", ["720"])[0])
+                    except (TypeError, ValueError):
+                        quality = 720
+                    if quality not in (360, 720, 1080):
+                        quality = 720
+                    logger.info(f"Descarga VIDEO proxy: {video_id} - {title} "
+                                f"({quality}p)")
+                    self._proxy_video_download(video_id, title, quality)
+                    return
                 logger.info(f"Descarga proxy: {video_id} - {title}")
                 self._proxy_download(video_id, title)
                 return
@@ -394,9 +414,48 @@ class APIHandler(BaseHTTPRequestHandler):
     DOWNLOAD_CACHE_MAX_AGE_H = 48
     DOWNLOAD_CACHE_MAX_FILES = 30
 
-    def _get_download_path(self, video_id: str) -> str:
+    def _get_download_path(self, video_id: str, ext: str = ".mp3", quality: int = 0) -> str:
         safe_id = video_id.replace("/", "_").replace("..", "_")
-        return os.path.join(self.DOWNLOAD_CACHE_DIR, f"{safe_id}.mp3")
+        # La calidad va en el nombre: 720p y 1080p del mismo vídeo son ficheros
+        # distintos y no pueden compartir la entrada de caché.
+        suffix = f"_q{quality}" if quality else ""
+        return os.path.join(self.DOWNLOAD_CACHE_DIR, f"{safe_id}{suffix}{ext}")
+
+    def _serve_file(self, path: str, content_type: str, video_id: str) -> bool:
+        """Sirve un fichero ya descargado con Content-Length real.
+
+        Devuelve False si no hay nada servible, para que el llamante siga con
+        la descarga. El Content-Length es lo que permite que el cliente muestre
+        un porcentaje honesto: en la ruta de audio por tubería no se conoce el
+        tamaño hasta el final, aquí sí.
+        """
+        if not os.path.isfile(path) or os.path.getsize(path) <= 1024:
+            return False
+        try:
+            file_size = os.path.getsize(path)
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("X-Video-Id", video_id)
+            self._cors_headers()
+            self.end_headers()
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            logger.info(f"Sirviendo fichero {os.path.basename(path)}: "
+                        f"{video_id} ({file_size} bytes)")
+            return True
+        except BrokenPipeError:
+            logger.debug(f"Cliente desconectado durante {os.path.basename(path)}")
+            return True
+        except Exception as e:
+            logger.warning(f"Error sirviendo {path}: {e}")
+            return False
 
     def _cleanup_download_cache(self) -> None:
         try:
@@ -405,7 +464,10 @@ class APIHandler(BaseHTTPRequestHandler):
             files = [
                 (os.path.join(self.DOWNLOAD_CACHE_DIR, f),
                  os.path.getmtime(os.path.join(self.DOWNLOAD_CACHE_DIR, f)))
-                for f in os.listdir(self.DOWNLOAD_CACHE_DIR) if f.endswith(".mp3")
+                for f in os.listdir(self.DOWNLOAD_CACHE_DIR)
+                # .mp4 entra también: los vídeos pesan mucho más y se comen el
+                # disco del plan gratis antes que los MP3.
+                if f.endswith(".mp3") or f.endswith(".mp4")
             ]
             if len(files) <= self.DOWNLOAD_CACHE_MAX_FILES:
                 return
@@ -415,6 +477,142 @@ class APIHandler(BaseHTTPRequestHandler):
                 except Exception: pass
         except Exception:
             pass
+
+    def _video_format_selector(self, quality: int) -> str:
+        """Selector de formato para vídeo.
+
+        Calidades fijas y no "best": con "best" el tamaño final depende de lo
+        que YouPub tenga publicado en ese momento y el cliente no podría
+        fiarse del total para el porcentaje. El último "b" es el salto de
+        seguridad para vídeos sin pista combinada o con altura desconocida.
+        """
+        if quality <= 0:
+            return "bv*+ba/b"
+        return f"bv*[height<={quality}]+ba/b[height<={quality}]/b"
+
+    def _merged_video_in(self, workdir: str) -> str | None:
+        """Localiza el MP4 ya mergeado en el directorio de trabajo."""
+        try:
+            for name in sorted(os.listdir(workdir)):
+                if not name.endswith(".mp4"):
+                    continue
+                path = os.path.join(workdir, name)
+                if os.path.getsize(path) > 1024:
+                    return path
+        except OSError:
+            return None
+        return None
+
+    def _proxy_video_download(self, video_id: str, title: str, quality: int) -> None:
+        """Descarga el vídeo a fichero y lo sirve con Content-Length.
+
+        No se puede reutilizar la ruta de audio por tubería: el merge de vídeo
+        necesita que ffmpeg escriba el MP4 en un fichero, así que aquí primero
+        se baja y se mergea, y después se sirve el fichero ya completo.
+
+        La contrapartida es que el cliente no ve el primer byte hasta que el
+        vídeo está entero. A cambio el Content-Length es exacto y el progreso
+        es un porcentaje real, no una estimación.
+        """
+        download_path = self._get_download_path(video_id, ext=".mp4", quality=quality)
+        os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
+
+        if self._serve_file(download_path, "video/mp4", video_id):
+            return
+
+        fmt = self._video_format_selector(quality)
+        url = f"https://youtube.com/watch?v={video_id}"
+        timeout_s = int(os.environ.get("VIDEO_DOWNLOAD_TIMEOUT", "420"))
+        last_err = ""
+
+        # ── 1. Clients directos, con el mismo deadline que el audio ──
+        direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "8"))
+        if not direct_path_available():
+            direct_deadline = 0.0
+        _start = time.monotonic()
+
+        for client in ordered_clients():
+            if time.monotonic() - _start > direct_deadline:
+                logger.info(f"Deadline de clients directos alcanzado para vídeo "
+                            f"{video_id}, pasando a proxy")
+                break
+            workdir = tempfile.mkdtemp(prefix="mp3vid_")
+            try:
+                cmd = _base_cmd(client) + [
+                    "--newline",
+                    "-f", fmt,
+                    "--merge-output-format", "mp4",
+                    "--no-playlist", "--no-part",
+                    "-o", os.path.join(workdir, "v.%(ext)s"),
+                    url,
+                ]
+                proc = subprocess.run(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=timeout_s,
+                )
+                merged = self._merged_video_in(workdir)
+                if proc.returncode == 0 and merged:
+                    os.replace(merged, download_path)
+                    self._cleanup_download_cache()
+                    record_success(client)
+                    self._serve_file(download_path, "video/mp4", video_id)
+                    return
+                last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
+                record_failure(client)
+                logger.warning(f"Vídeo falló (client {client}): {last_err}")
+            except subprocess.TimeoutExpired:
+                last_err = "timeout descargando el vídeo"
+                record_failure(client)
+                logger.warning(f"Vídeo timeout (client {client}) para {video_id}")
+            except Exception as e:
+                last_err = str(e)[:300]
+                record_failure(client)
+                logger.warning(f"Vídeo excepción (client {client}): {e}")
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+
+        # ── 2. Proxy SOCKS5, que es la única vía que funciona desde datacenter ──
+        record_direct_failure()
+        blocked: set = set()
+        max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
+        for _attempt in range(max_proxy_attempts):
+            proxy = _find_working_proxy(video_id, blocked=blocked)
+            if not proxy:
+                break
+            workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
+            try:
+                logger.info(f"Vídeo {video_id} por proxy {proxy}")
+                cmd = _proxy_cmd_video(video_id, proxy, quality, workdir)
+                proc = subprocess.run(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=timeout_s,
+                )
+                merged = self._merged_video_in(workdir)
+                if merged:
+                    os.replace(merged, download_path)
+                    self._cleanup_download_cache()
+                    self._serve_file(download_path, "video/mp4", video_id)
+                    return
+                last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
+                blocked.add(proxy)
+                logger.warning(f"Vídeo falló por proxy {proxy}: {last_err}")
+            except subprocess.TimeoutExpired:
+                last_err = "timeout en el proxy"
+                blocked.add(proxy)
+                logger.warning(f"Vídeo timeout por proxy {proxy}")
+            except Exception as e:
+                last_err = str(e)[:300]
+                blocked.add(proxy)
+                logger.warning(f"Vídeo excepción por proxy {proxy}: {e}")
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+
+        self._json(502, {
+            "error": "No se pudo descargar el vídeo",
+            "detail": last_err[:300] or "sin detalle",
+            "videoId": video_id,
+            "quality": quality,
+        })
 
     def _proxy_download(self, video_id: str, title: str) -> None:
         import subprocess as _sp

@@ -592,6 +592,34 @@ def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[st
     return cmd
 
 
+def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str) -> list[str]:
+    """Comando yt-dlp para descargar VÍDEO completo vía proxy SOCKS5.
+
+    No reutiliza `_proxy_cmd` a propósito: allí el formato es audio y la salida
+    va a stdout, mientras que el merge de vídeo necesita un fichero real donde
+    ffmpeg pueda escribir el contenedor MP4 (no se puede muxear MP4 a un pipe
+    sin usar flags de fragmentado que no queremos en la salida final).
+
+    Mismo criterio de calidad que el servidor: fijada y no "best", porque el
+    cliente necesita un tamaño total fiable para el porcentaje de progreso.
+    """
+    if quality <= 0:
+        fmt = "bv*+ba/b"
+    else:
+        fmt = f"bv*[height<={quality}]+ba/b[height<={quality}]/b"
+    return [
+        "yt-dlp", "--no-warnings",
+        "--proxy", proxy,
+        "--user-agent", random.choice(USER_AGENTS),
+        "--extractor-args", "youtube:player_client=android",
+        "-f", fmt,
+        "--merge-output-format", "mp4",
+        "--no-playlist", "--no-part",
+        "-o", os.path.join(workdir, "v.%(ext)s"),
+        f"https://youtube.com/watch?v={video_id}",
+    ]
+
+
 def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None:
     """Encuentra un proxy que pueda resolver el video (validación rápida).
 
