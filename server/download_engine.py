@@ -243,6 +243,24 @@ def ordered_video_clients() -> list[str]:
     return list(VIDEO_CLIENTS)
 
 
+def _player_client_arg(clients: list[str]) -> str:
+    """Valor de `--extractor-args youtube:player_client=...` con la lista completa.
+
+    Fix 2026-09-26: la ruta del proxy forzaba `player_client=android` en los
+    cuatro sitios. Dos consecuencias medidas, no teóricas:
+
+    - `android` expone UN formato de vídeo, el muxed de 640x272 (medido el
+      2026-09-25 con ac7KhViaVqc: mweb daba 8 formatos hasta 1920x818, android
+      daba 1). Con android forzado, pedir 1080p devolvía 360p sin avisar.
+    - Los proxies se sondeaban con `android`, así que uno que solo sirviera con
+      otro client se descartaba como muerto y se contaban como "7 probados".
+
+    yt-dlp recorre la lista internamente, así que una sola invocación prueba los
+    siete en orden; no hace falta un bucle externo por client.
+    """
+    return "youtube:player_client=" + ",".join(clients)
+
+
 def client_state(client: str) -> dict:
     h = _client_health.get(client)
     if not h:
@@ -631,7 +649,7 @@ def _try_with_proxy(video_id: str) -> str | None:
                 "yt-dlp", "--no-warnings",
                 "--proxy", proxy,
                 "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", "youtube:player_client=android",
+                "--extractor-args", _player_client_arg(ordered_clients()),
                 "-f", "bestaudio/best",
                 "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
                 "--retries", str(YTDLP_RETRIES),
@@ -669,7 +687,7 @@ def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[st
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
-        "--extractor-args", "youtube:player_client=android",
+        "--extractor-args", _player_client_arg(ordered_clients()),
         "-f", "bestaudio/best",
         "--no-playlist", "--no-part",
     ]
@@ -732,7 +750,7 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str) -> l
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
-        "--extractor-args", "youtube:player_client=android",
+        "--extractor-args", _player_client_arg(ordered_video_clients()),
         "-f", video_format_selector(quality),
         "--merge-output-format", "mp4",
         "--no-playlist", "--no-part",
@@ -782,7 +800,7 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
                 "yt-dlp", "--no-warnings",
                 "--proxy", proxy,
                 "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", "youtube:player_client=android",
+                "--extractor-args", _player_client_arg(ordered_clients()),
                 "-f", "bestaudio/best",
                 "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
                 "--retries", str(YTDLP_RETRIES),
