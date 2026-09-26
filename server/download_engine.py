@@ -366,6 +366,25 @@ def is_video_level_error(text: str) -> bool:
     return any(marker in lowered for marker in _VIDEO_LEVEL_ERRORS)
 
 
+def is_bot_challenge(text: str) -> bool:
+    """True si YouTube respondió con el challenge que pide sesión o cookies.
+
+    Es el bloqueo típico de una IP de datacenter. No se arregla reintentando:
+    hay que salir de esa IP, con un proxy residencial.
+    """
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in (
+        "sign in to confirm",
+        "not a bot",
+        "confirm you're not a bot",
+        "confirm you’re not a bot",
+        "use --cookies",
+        "login required",
+    ))
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _VIDEO_LEVEL_ERRORS)
+
+
 def direct_path_state() -> dict:
     with _direct_lock:
         remaining = max(0.0, _direct_disabled_until - time.time())

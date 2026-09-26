@@ -52,6 +52,7 @@ from download_engine import (
     record_direct_failure,
     record_direct_success,
     is_video_level_error,
+    is_bot_challenge,
     invidious_get_audio_url,
 )
 
@@ -996,7 +997,7 @@ class APIHandler(BaseHTTPRequestHandler):
             if not proxy:
                 logger.warning(f"Proxy falló para {video_id} (no se encontró proxy), "
                                f"intentando Invidious fallback...")
-                self._proxy_download_invidious(video_id, title)
+                self._proxy_download_invidious(video_id, title, reason=last_err)
                 return
             ok = self._stream_proxy_download(video_id, proxy)
             if ok:
@@ -1009,7 +1010,7 @@ class APIHandler(BaseHTTPRequestHandler):
         logger.warning(f"Proxy falló para {video_id} "
                        f"({max_proxy_attempts} intentos sin audio), "
                        f"intentando Invidious fallback...")
-        self._proxy_download_invidious(video_id, title)
+        self._proxy_download_invidious(video_id, title, reason=last_err)
 
     def _stream_proxy_download(self, video_id: str, proxy: str) -> None:
         """Stream download a través del proxy.
@@ -1156,14 +1157,25 @@ class APIHandler(BaseHTTPRequestHandler):
         return False
 
     # ─── Invidious fallback para download ────────────────────
-    def _proxy_download_invidious(self, video_id: str, title: str) -> None:
-        """Descarga vía Invidious cuando yt-dlp falla."""
+    def _proxy_download_invidious(self, video_id: str, title: str, reason: str = "") -> None:
+        """Descarga vía Invidious cuando yt-dlp falla.
+
+        `reason` es el error real de la vía directa. Sin él, el mensaje que
+        ve el usuario culpa a Invidious de un fallo que no es suyo: si lo que
+        hubo fue el challenge de bot de YouTube, Invidious es el último
+        recurso que se intentó y no la causa.
+        """
         import subprocess as _sp
 
         audio_url = invidious_get_audio_url(video_id)
         if not audio_url:
+            if is_bot_challenge(reason):
+                mensaje = ("YouTube bloquea este servidor por IP de datacenter "
+                           "(challenge de bot). El vídeo no es el problema")
+            else:
+                mensaje = "Invidious fallback: no audio URL available"
             try:
-                self._json(502, {"error": "Invidious fallback: no audio URL available"})
+                self._json(502, {"error": mensaje})
             except Exception:
                 pass
             return
