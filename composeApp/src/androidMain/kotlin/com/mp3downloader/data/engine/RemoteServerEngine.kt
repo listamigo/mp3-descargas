@@ -8,6 +8,7 @@ import com.mp3downloader.domain.service.isValidYouTubeId
 import com.mp3downloader.domain.service.sanitizeFileName
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.HttpResponse
@@ -26,6 +27,14 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.coroutineContext
+
+/** Respuesta de /api/ready: si el host puede servir ese vídeo ahora. */
+@Serializable
+data class RemoteReadyResponse(
+    val ok: Boolean = false,
+    val estimatedBytes: Long? = null,
+    val limitBytes: Long? = null
+)
 
 @Serializable
 data class RemoteSearchItem(
@@ -175,6 +184,39 @@ class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.server
         return result
     }
 
+    /**
+     * true  = este host sirve el vídeo ahora mismo.
+     * false = ahora mismo no puede (YouTube lo rechaza) y no tiene sentido
+     *         esperar 40-70 s a un 502 para descubrirlo.
+     * null  = no se pudo saber. Se devuelve null, y no false, cuando la
+     *         pregunta falla por lo que sea: un host viejo sin el endpoint, una
+     *         red inestable. Ante la duda se descarga, porque un falso "no"
+     *         rompería descargas que sí habrían salido.
+     */
+    private suspend fun probeReady(videoId: String, quality: Int): Boolean? {
+        val server = server() ?: return null
+        return try {
+            val raw = httpClient.get("$server/api/ready") {
+                parameter("videoId", videoId)
+                parameter("quality", quality)
+                // El cliente compartido espera 10 min porque una descarga larga
+                // lo necesita; esta pregunta no. Si el host tarda más de 25 s en
+                // responder, es que tampoco va a servir el vídeo.
+                timeout { requestTimeoutMillis = 25_000 }
+            }.bodyAsText()
+            if (remoteJson.decodeFromString<RemoteReadyResponse>(raw).ok) {
+                reportSuccess()
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            // Un 404 de un servidor que no conoce el endpoint, un timeout o
+            // cualquier otra cosa: no sabemos, no bloqueamos.
+            null
+        }
+    }
+
     override suspend fun getAudioStreamUrl(song: Song): Result<String> {
         val server = server() ?: return Result.failure(RuntimeException(
             "Sin servidor propio configurado (opcional)."
@@ -229,6 +271,27 @@ class RemoteServerEngine(private val host: () -> String? = { RemoteConfig.server
         // tope de audio (250 MB) rechazaría casi todo lo que se pida como
         // vídeo, así que el guard usa un límite propio.
         val sizeLimit = if (isVideo) maxVideoBytes else maxDownloadBytes
+
+        // Preguntar antes de descargar si este host puede sacar este vídeo. Sin
+        // esto, un host bloqueado por YouTube tarda 40-70 s en contestar 502, y
+        // con dos hosts en la cadena el usuario espera más de 3 minutos sin
+        // saber qué pasa. La pregunta no es un trasto: el servidor la resuelve
+        // con la misma extracción de metadatos que necesita para saber el peso
+        // del MP4, así que la descarga después no la repite.
+        //
+        // Solo en vídeo: en audio la respuesta es un stream en vivo y no hay
+        // nada que preparar. Un null significa "no se pudo saber" (la pregunta
+        // falló, el host es viejo y no tiene el endpoint) y en ese caso se
+        // sigue con la descarga de siempre en vez de inventarse un fallo.
+        if (isVideo) {
+            val ready = probeReady(song.id, quality)
+            if (ready == false) {
+                val detail = "el servidor no puede acceder a YouTube ahora mismo"
+                reportFailure(detail)
+                emit(DownloadResult(song.id, DownloadStatus.FAILED, error = detail))
+                return@flow
+            }
+        }
 
         try {
             activeDownloads[song.id] = true

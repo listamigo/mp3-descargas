@@ -10,6 +10,7 @@ Endpoints:
   GET  /api/download   ?videoId=<id>&title=  → Stream del audio (proxy)
   GET  /api/download   ?videoId=<id>&mode=video&quality=<240|360|480|720|1080>
                                               → MP4 mergeado (Content-Length real)
+  GET  /api/ready    ?videoId=<id>&quality=<q> → ¿Puede el host servir este vídeo?
   GET  /api/health                           → Estado del servidor
   POST /api/cookies                          → Subir cookies.txt
 """
@@ -327,8 +328,32 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._proxy_preview(video_id, title)
                 return
 
+            if path == "/api/ready":
+                # ¿Puede este host sacar este vídeo AHORA? No se deduce del
+                # circuit breaker: eso guarda la opinión del host sobre sus
+                # clientes, y un host puede tenerlos "sanos" mientras YouTube
+                # le rechaza. La única forma de saberlo es preguntar de verdad,
+                # que es lo mismo que hace la descarga al empezar, así que el
+                # tamaño calculado aquí se cachea y le sirve a la descarga.
+                video_id = params.get("videoId", [""])[0]
+                if not video_id:
+                    self._json(400, {"ok": False, "error": "Missing ?videoId="})
+                    return
+                try:
+                    quality = int(params.get("quality", ["720"])[0])
+                except (TypeError, ValueError):
+                    quality = 720
+                estimate = self._video_size_estimate(video_id, quality)
+                self._json(200, {
+                    "ok": estimate is not None,
+                    "videoId": video_id,
+                    "quality": quality,
+                    "estimatedBytes": estimate,
+                    "limitBytes": self.VIDEO_MAX_BYTES,
+                })
+                return
+
             if path == "/api/health":
-                # Verificar PO token provider (vias HTTP y script)
                 # El sondeo lo hace download_engine y lo cachea; force=True
                 # porque aqui se quiere el estado actual, no el cacheado.
                 po_provider_ok = po_http_provider_alive(force=True)
@@ -433,6 +458,12 @@ class APIHandler(BaseHTTPRequestHandler):
     DOWNLOAD_CACHE_MAX_TOTAL_BYTES = int(
         os.environ.get("DOWNLOAD_CACHE_MAX_TOTAL_BYTES", str(2 * 1024 * 1024 * 1024))
     )
+    # Tamaño estimado por (vídeo, calidad), para que /api/ready y la descarga no
+    # repitan la extracción. Se cachea un fallo poco tiempo porque suele ser un
+    # bloqueo temporal de YouTube que se levanta enseguida.
+    _SIZE_ESTIMATE_CACHE: dict = {}
+    SIZE_ESTIMATE_TTL_S = 300
+    SIZE_ESTIMATE_TTL_FAIL_S = 30
 
     def _get_download_path(self, video_id: str, ext: str = ".mp3", quality: int = 0) -> str:
         safe_id = video_id.replace("/", "_").replace("..", "_")
@@ -551,6 +582,20 @@ class APIHandler(BaseHTTPRequestHandler):
         deadline = float(os.environ.get("SIZE_PROBE_DEADLINE", "30"))
         start = time.monotonic()
 
+        # Caché: el cliente pregunta antes por /api/ready y, si el host dice que
+        # sí sirve, la descarga reutiliza el tamaño que se acaba de calcular en
+        # vez de repetir la extracción.
+        key = (video_id, quality)
+        cached = self._SIZE_ESTIMATE_CACHE.get(key)
+        if cached:
+            age, value = cached
+            # Un None se cachea menos tiempo: suele ser un bloqueo temporal de
+            # YouTube que puede levantarse enseguida, y no queremos seguir
+            # creyéndolo durante minutos.
+            ttl = self.SIZE_ESTIMATE_TTL_S if value else self.SIZE_ESTIMATE_TTL_FAIL_S
+            if time.time() - age < ttl:
+                return value
+
         for client in ordered_video_clients():
             if time.monotonic() - start > deadline:
                 break
@@ -583,8 +628,10 @@ class APIHandler(BaseHTTPRequestHandler):
             if total > 0:
                 logger.info(f"Tamaño estimado para {video_id} ({quality}p): "
                             f"{total} bytes")
+                self._SIZE_ESTIMATE_CACHE[key] = (time.time(), total)
                 return total
-        logger.info(f"Sin tamaño estimado para {video_id}; seProcede sin comprobar")
+        logger.info(f"Sin tamaño estimado para {video_id}; se procede sin comprobar")
+        self._SIZE_ESTIMATE_CACHE[key] = (time.time(), None)
         return None
 
     def _reject_too_big(self, video_id: str, quality: int, size: int) -> None:
