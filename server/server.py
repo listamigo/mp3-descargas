@@ -8,7 +8,7 @@ Endpoints:
   GET  /api/search     ?q=<query>            → Lista de canciones
   GET  /api/stream-url ?videoId=<id>         → URL directa de audio
   GET  /api/download   ?videoId=<id>&title=  → Stream del audio (proxy)
-  GET  /api/download   ?videoId=<id>&mode=video&quality=<360|720|1080>
+  GET  /api/download   ?videoId=<id>&mode=video&quality=<240|360|480|720|1080>
                                               → MP4 mergeado (Content-Length real)
   GET  /api/health                           → Estado del servidor
   POST /api/cookies                          → Subir cookies.txt
@@ -304,7 +304,10 @@ class APIHandler(BaseHTTPRequestHandler):
                     # Las mismas calidades que el selector del cliente. Si el
                     # cliente pide otra cosa, se cae a 720p en vez de
                     # inventar un formato que el servidor no pediría igual.
-                    if quality not in (240, 360, 480, 720):
+                    # 1080p es el techo del lado servidor por la misma razón
+                    # que en el cliente: por encima el h264 deja de estar
+                    # publicado y el merge a MP4 dejaría de ser una copia.
+                    if quality not in (240, 360, 480, 720, 1080):
                         quality = 720
                     logger.info(f"Descarga VIDEO proxy: {video_id} - {title} "
                                 f"({quality}p)")

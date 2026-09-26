@@ -45,11 +45,12 @@ enum class MediaKind { AUDIO, VIDEO }
  *
  * Fijas y no "la mejor disponible": con "best" el tamaño final depende de lo
  * que YouTube tenga publicado en ese momento, y el cliente necesita un total
- * fiable para que el porcentaje signifique algo. Se corta en 720p a propósito:
- * por encima el fichero se dispara y el tiempo de descarga deja de ser
- * razonable en un móvil con datos.
+ * fiable para que el porcentaje signifique algo. 1080p es el techo: por encima
+ * YouTube solo publica VP9/AV1 y el merge a MP4 dejaría de ser una copia de
+ * pistas. Del peso se ocupa el cliente, que rechaza el fichero por encima de
+ * 500 MB.
  */
-val VIDEO_QUALITIES: List<Int> = listOf(240, 360, 480, 720)
+val VIDEO_QUALITIES: List<Int> = listOf(240, 360, 480, 720, 1080)
 
 interface DownloadEngine {
     suspend fun search(query: String, offset: Int = 0): Result<List<Song>>
