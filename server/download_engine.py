@@ -332,6 +332,40 @@ def record_direct_failure() -> None:
             _direct_disabled_until = time.time() + DIRECT_PATH_DISABLED_S
 
 
+# Errores que NO son culpa de la IP del servidor: el vídeo no existe, es
+# privado, se borró o no está disponible en la región. Antes de contar esto
+# como fallo de la vía directa se abría el breaker entero (5 minutos sin
+# probar ningún cliente) y con ello caían también los vídeos que sí se
+# podían descargar. Que un vídeo no esté disponible no dice nada de si
+# nuestra IP está bloqueada.
+_VIDEO_LEVEL_ERRORS = (
+    "this video is unavailable",
+    "video unavailable",
+    "video is not available",
+    "this video is private",
+    "private video",
+    "removed by the uploader",
+    "has not made this video available",
+    "account associated with this video has been terminated",
+    "not available in your country",
+    "who has blocked it on copyright grounds",
+    "requested format is not available",
+    "requested format not available",
+    "unable to extract",
+    "no video formats found",
+)
+
+
+def is_video_level_error(text: str) -> bool:
+    """True si el fallo es del vídeo y no de una IP bloqueada por YouTube.
+
+    Importante: "Sign in to confirm you're not a bot" NO entra aquí. Eso sí
+    es un bloqueo de IP y tiene que seguir abriendo el breaker.
+    """
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _VIDEO_LEVEL_ERRORS)
+
+
 def direct_path_state() -> dict:
     with _direct_lock:
         remaining = max(0.0, _direct_disabled_until - time.time())

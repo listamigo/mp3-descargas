@@ -51,6 +51,7 @@ from download_engine import (
     direct_path_state,
     record_direct_failure,
     record_direct_success,
+    is_video_level_error,
     invidious_get_audio_url,
 )
 
@@ -755,7 +756,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 shutil.rmtree(workdir, ignore_errors=True)
 
         # ── 2. Proxy SOCKS5, que es la única vía que funciona desde datacenter ──
-        record_direct_failure()
+        # Un vídeo que no está disponible no dice nada de nuestra IP: si eso
+        # abriera el breaker, serían 5 minutos con todos los clientes saltados
+        # y los vídeos que sí funcionan caerían también.
+        if not is_video_level_error(last_err):
+            record_direct_failure()
         blocked: set = set()
         max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
         for _attempt in range(max_proxy_attempts):
@@ -967,7 +972,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 except Exception: pass
 
         # Todos los clients fallaron → intentar proxy SOCKS5
-        record_direct_failure()
+        # Misma razón que en vídeo: si el fallo es del vídeo y no de la IP,
+        # abrir el breaker tumba también las descargas que sí funcionarían.
+        if not is_video_level_error(last_err):
+            record_direct_failure()
         # NOTA: la descarga COMPLETA debe pasar por el proxy. YouTube firma
         # la URL de googlevideo para la IP que la solicitó, así que obtener
         # la URL con --get-url y descargarla directo desde la IP del server
