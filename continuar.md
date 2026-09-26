@@ -604,3 +604,48 @@ Comprobar que un `.m4a` descargado no está truncado:
 ```bash
 ~/.local/bin/ffprobe -v error -print_format json -show_format -show_streams "archivo.m4a"
 ```
+
+## 2026-09-25 — Rediseño de resultados y limpieza por sección (`53b1ac7`)
+
+Búsqueda de resultados tal como queda en un Xiaomi 220333QAG (411 dp de ancho,
+720x1650, densidad 280). Medido con `uiautomator dump`, no a ojo: `y=`, `x=` y
+alturas de tarjeta en px, dividiendo entre 1,75 para pasar a dp.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ┌──────┐  ROSALÍA - La Perla (Official Video) ft. Yahritza │  título 2 líneas
+│ │ 3:30 │  ROSALÍA              6,4 MB · 256k                │  peso al borde
+│ └──────┘  ▶ Escuchar                    [ Descargar ]       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Decisiones y por qué:
+
+- **La tarjeta no crece.** La primera versión添加ó una fila de controles debajo y
+  pasó de 85 dp a 120 dp. Lo que estaba sin aprovechar era el ancho del título, no
+  la altura: los botones se comían un tercio y el título quedaba en una línea.
+  Ahora el título usa las dos líneas que la tarjeta ya tenía y los controles siguen
+  a la derecha. Altura final medida: 89 dp (155 px de paso entre tarjetas).
+- **`verticalAlignment = Alignment.CenterVertically` en la fila principal.** Estaba en
+  `Top`, y con el título a 2 líneas el botón "Descargar" quedaba 10 dp por encima
+  del centro de la tarjeta (centro medido 484 px contra 501 px del contenido).
+- **El peso va con `weight(1f)` en el artista + `Arrangement.End`.** Con
+  `fill = false` los dos textos se emparejaban y solo quedaban al borde por casualidad
+  cuando su suma coincidía con el ancho de la columna. El `Arrangement.End` hace
+  falta además porque al ocultarse el artista no queda ningún hijo con peso y el
+  texto se iba al borde izquierdo (x=169 en vez de x=430).
+- **Artista a 2 líneas, peso a 9 sp.** "256 kbps · 5,8 MB" a labelSmall no cabía con
+  el artista y quedaba en "Artista desc...". Se compacta a "5,8 MB · 256k".
+- **`Artista desconocido` se oculta en la UI**, no en el servidor: lo produce
+  `server/download_engine.py:1214` cuando no deduce el artista, y es lo bastante
+  largo para truncarse y empujar el peso fuera de la fila. Filtrarlo en el cliente
+  también cubre respuestas ya cacheadas de despliegues viejos.
+- **`ThumbnailImage` ya no fija su propio `size(52.dp)`**; el llamador decide el
+  tamaño, que ahora es 54 dp.
+
+Limpieza por sección: antes los dos botones "Limpiar" llamaban a
+`clearFinishedDownloads()`, que quitaba completadas *y* fallidas. Ahora es
+`clearSection(status)` y cada botón borra solo lo suyo; la sección sin elementos no
+dibuja botón.
+
+Pendiente: el PAT de GitHub que apareció en los logs sigue sin revocarse.
