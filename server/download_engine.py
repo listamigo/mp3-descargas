@@ -645,13 +645,23 @@ def video_format_selector(quality: int) -> str:
       (o fallar). Pidiendo el h264/aac que YouTube ya publica, el archivo sale
       sin tocar los bits.
 
+    - `[ext=mp4]` NO basta para pedir h264, y esto costó una descarga: YouTube
+      publica también AV1 y VP9 dentro de MP4, así que sin filtrar el códec
+      yt-dlp elige AV1 por defecto porque lo considera mejor. Pasó en Sintel: se
+      pidió 240p y llegó av01 de 426x182 teniendo h264 disponible en las cuatro
+      alturas (formatos 133/134/135/136). El primer término lleva por eso
+      `[vcodec^=avc1]`, y los siguientes se quedan como red de seguridad. Además
+      la app declara minSdk 24 y AV1 no se decodifica en Android 7, así que un
+      AV1 puede salir a negro en móviles viejos.
+
     El último `b` es el salto de seguridad para vídeos sin pista de vídeo
     separada o con altura desconocida.
     """
     if quality <= 0:
-        return "bv[ext=mp4]+ba[ext=m4a]/bv*+ba/b"
+        return "bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*+ba/b"
     return (
-        f"bv[height<={quality}][ext=mp4]+ba[ext=m4a]"
+        f"bv[height<={quality}][ext=mp4][vcodec^=avc1]+ba[ext=m4a]"
+        f"/bv[height<={quality}][ext=mp4]+ba[ext=m4a]"
         f"/bv[height<={quality}]+ba"
         f"/b[height<={quality}]/b"
     )
