@@ -649,3 +649,48 @@ Limpieza por sección: antes los dos botones "Limpiar" llamaban a
 dibuja botón.
 
 Pendiente: el PAT de GitHub que apareció en los logs sigue sin revocarse.
+
+---
+
+## OBJETIVO FUTURO: integrar el reproductor propio con la app de descargas
+
+Registrado el 2026-09-25 a petición del usuario, **fuera del alcance de la fase
+de vídeo** que se estaba cerrando. No es un bug de la app de descargas: es un
+problema de la integración entre las dos apps, que hoy no existe.
+
+Qué pide el usuario:
+
+- El usuario tiene **su propio reproductor de música y vídeo**. Cuando desde la
+  app de descargas se pulsa "Abrir" sobre un fichero ya descargado, y ese fichero
+  se abre en su reproductor, **la primera vez no sale todo bien**. A partir de la
+  segunda ya funciona.
+- Objetivo: que la descarga y la reproducción funcionen bien juntas de principio a
+  fin, sin ese primer intento fallido.
+
+Por qué queda como objetivo futuro y no como bug a arreglar ya:
+
+- El síntoma ("la primera vez no") apunta a algo que ocurre **entre** las dos
+  apps: paso de Intent, escritura del fichero, MediaStore/indexado, o permisos.
+  Sin reproducirlo con el reproductor real a mano no se puede atribuir a ninguna
+  de las dos, y cambiar la app de descargas a ciegas sería adivinar.
+- La app de descargas ya entrega el fichero donde el reproductor lo encuentra
+  (`content://media/external/downloads/...`, `mime_type` correcto: se verificó
+  `video/mp4` en el MP4 y el MP3 en el audio). Ese contrato es la base sobre la
+  que luego se construirá el resto.
+- El usuario es quien tiene el reproductor; hace falta su prueba manual para
+  capturar **qué falla exactamente** en ese primer intento (no aparece, sale
+  negro, no suena, se cierra, etc.).
+
+Cómo abordarlo cuando se retome:
+
+1. Reproducir el fallo a mano con el reproductor real y apuntar el síntoma exacto.
+2. Registrar con `adb logcat` lo que pasa en el primer `ACTION_VIEW` y compararlo
+   con el segundo, que sí funciona. La diferencia es la causa.
+3. Revisar el lado escritura: `MediaStore` con `IS_PENDING`, permisos y momento en
+   que el fichero se hace visible. Un fichero visible antes de estar completo
+   explica justo un "a la primera no, a la segunda sí".
+4. Solo entonces tocar la app de descargas, y solo el lado que aparezca en el log.
+
+Nota de codificación: el MP4 sale **h264 + aac** a propósito (ver
+`server/download_engine.py:video_format_selector`), pero el usuario tiene su
+propio reproductor y el códec no es un bloqueante para esta integración.
