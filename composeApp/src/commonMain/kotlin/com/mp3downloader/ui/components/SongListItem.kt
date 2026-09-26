@@ -371,7 +371,7 @@ fun SongListItem(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -389,10 +389,20 @@ fun SongListItem(
                             label = {
                                 Text(
                                     text = "${q}p",
-                                    style = MaterialTheme.typography.labelSmall
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1
                                 )
                             },
-                            modifier = Modifier.height(28.dp)
+                            // `weight` para repartir el ancho entre los chips en
+                            // vez de que el último se coma lo que sobra. Con
+                            // cinco calidades, el 1080p se quedaba sin sitio y
+                            // Compose partía la etiqueta en dos líneas ("108" /
+                            // "0p"), con un chip el doble de alto que el resto.
+                            // `maxLines = 1` evita que vuelva a pasar: el texto
+                            // se recorta, pero la fila no crece.
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(28.dp)
                         )
                     }
                 }
