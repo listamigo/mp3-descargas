@@ -1,5 +1,6 @@
 package com.mp3downloader.data.engine
 
+
 import com.mp3downloader.domain.model.DownloadStatus
 import com.mp3downloader.domain.model.Song
 import com.mp3downloader.domain.service.isSafeHttpsUrl
@@ -72,8 +73,18 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
 
     override fun isTripped(): Boolean = HostBreaker.isTripped(server())
 
+    /** Este motor es el que sabe pedir `?mode=video&quality=` al servidor. */
+    override fun supportsVideo(): Boolean = true
+
     /** Reject absurdly large responses to avoid filling the device storage. */
     private val maxDownloadBytes = 250L * 1024 * 1024
+
+    /**
+     * Ceiling for video: double the audio one, 500 MB. That is roughly forty
+     * minutes of 1080p, and past it the transfer takes longer than anyone
+     * waits, so refusing up front beats filling the device.
+     */
+    private val maxVideoBytes = 500L * 1024 * 1024
 
     /**
      * Bytes per second of the encoded MP3, used to turn a duration into a size.
@@ -173,7 +184,9 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
 
     override fun download(
         song: Song,
-        outputDir: String
+        outputDir: String,
+        media: MediaKind,
+        quality: Int
     ): Flow<DownloadResult> = flow {
         val server = server()
             ?: run {
@@ -189,14 +202,24 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
             return@flow
         }
 
+        val isVideo = media == MediaKind.VIDEO
         val safeTitle = sanitizeFileName(song.title)
-        val outputFile = File(outputDir, "$safeTitle.mp3")
+        val outputFile = File(outputDir, "$safeTitle.${if (isVideo) "mp4" else "mp3"}")
+        // Un MP4 pesa bastante más que el MP3 del mismo vídeo: un 1080p de
+        // tres minutos ronda los 40-60 MB, y una hora Easily pasa de 500 MB.
+        // El tope de audio (250 MB) rechazaría casi todo lo que se pida como
+        // vídeo, así que el guard usa un límite propio.
+        val sizeLimit = if (isVideo) maxVideoBytes else maxDownloadBytes
 
         try {
             activeDownloads[song.id] = true
 
             val videoId = java.net.URLEncoder.encode(song.id, "UTF-8")
-            val audioUrl = java.net.URL("$server/api/download?videoId=$videoId&title=${java.net.URLEncoder.encode(song.title, "UTF-8")}")
+            // mode/quality solo se mandan en vídeo; en audio la URL queda igual
+            // que siempre, de modo que un servidor viejo que no conozca los
+            // parámetros sigue sirviendo MP3 sin cambios.
+            val mediaParams = if (isVideo) "&mode=video&quality=$quality" else ""
+            val audioUrl = java.net.URL("$server/api/download?videoId=$videoId&title=${java.net.URLEncoder.encode(song.title, "UTF-8")}$mediaParams")
             val connection = audioUrl.openConnection() as java.net.HttpURLConnection
             connection.connectTimeout = 120_000
             connection.readTimeout = 600_000
@@ -222,11 +245,21 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
             val headerBytes = connection.contentLengthLong
             // The server only sets Content-Length on a cache hit; on a cache
             // miss it streams chunked, so fall back to the estimate.
-            val totalBytes = if (headerBytes > 0) headerBytes else expectedTotalBytes(song)
-            if (totalBytes > maxDownloadBytes) {
+            //
+            // The estimate is an MP3 constant, so it must not touch a video: the
+            // server merges the MP4 to a file before serving it and always sends
+            // its real length, and if that header is missing for a video we
+            // honestly show bytes and speed with no percentage rather than a
+            // bar built on a bitrate that has nothing to do with the file.
+            val totalBytes = when {
+                headerBytes > 0 -> headerBytes
+                isVideo -> 0L
+                else -> expectedTotalBytes(song)
+            }
+            if (totalBytes > sizeLimit) {
                 inputStream.close()
                 emit(DownloadResult(song.id, DownloadStatus.FAILED,
-                    error = "Archivo demasiado grande para descargar (máx 250 MB)."))
+                    error = "Archivo demasiado grande para descargar (máx ${sizeLimit / 1048576} MB)."))
                 return@flow
             }
             var downloadedBytes = 0L
@@ -243,7 +276,7 @@ class RemoteServerEngine(private val baseUrl: String? = null) : DownloadEngine {
                     outputStream.write(buffer, 0, bytesRead)
                     downloadedBytes += bytesRead
 
-                    if (downloadedBytes > maxDownloadBytes) {
+                    if (downloadedBytes > sizeLimit) {
                         inputStream.close()
                         outputFile.delete()
                         emit(DownloadResult(song.id, DownloadStatus.FAILED,

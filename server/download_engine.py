@@ -206,6 +206,43 @@ def ordered_clients():
     return list(PLAYER_CLIENTS)
 
 
+# Para VÍDEO el orden de clients NO puede ser el de audio, y la razón es
+# concreta: la escalera de formatos completa solo aparece en algunos clients,
+# y un client "degradado" tiene éxito igualmente, así que el bucle se queda
+# con él y nunca llega al bueno.
+#
+# Medido el 2026-09-25 con ac7KhViaVqc (tráiler de Sintel, 54 s):
+#   mweb              -> 8 formatos: 1920x818, 1280x546, 640x272, 256x110, audio
+#   android           -> 1 formato : 640x272  (el muxed de 360p, y nada más)
+#   android_vr        -> 1 formato : 640x272
+#   web / tv / ios    -> 0 formatos (bloqueados desde IP de datacenter)
+#
+# Con `android` primero, pedir 720p devolvía 360p sin intentar nada más. Por eso
+# mweb va el primero aquí aunque en la lista de audio llegue en quinto lugar.
+VIDEO_CLIENTS = [
+    "mweb",
+    "android",
+    "tv_embedded",
+    "tv",
+    "ios",
+    "web",
+    "android_vr,web",
+]
+
+
+def ordered_video_clients() -> list[str]:
+    """Clients para descarga de vídeo, con el mismo criterio de cooldown.
+
+    Nunca devuelve lista vacía, por el mismo motivo que [ordered_clients].
+    """
+    fresh = [c for c in VIDEO_CLIENTS
+             if _seconds_since_failure(c) >= _CB_COOLDOWN_SECONDS]
+    if fresh:
+        cool = [c for c in VIDEO_CLIENTS if c not in fresh]
+        return fresh + cool
+    return list(VIDEO_CLIENTS)
+
+
 def client_state(client: str) -> dict:
     h = _client_health.get(client)
     if not h:
@@ -592,6 +629,34 @@ def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[st
     return cmd
 
 
+def video_format_selector(quality: int) -> str:
+    """Selector de formato para el MP4, compartido por la vía directa y el proxy.
+
+    Dos decisiones que costaron un depurado:
+
+    - `bv` y no `bv*`. La estrella de `bv*` incluye los formatos que ya traen
+      audio, y como yt-dlp los prefiere, el selector elegía el muxed de 360p en
+      lugar del 720p sin audio: se pedía 720p y llegaba 360p. Con `bv` se elige
+      la pista de vídeo sola, que es la que luego se combina con `+ba`.
+
+    - Se prefieren `[ext=mp4]` y `[ext=m4a]`, que son h264 y aac. El merge a MP4
+      es una copia de pistas, no una conversión: si le cayera VP9 con Opus no
+      hay nada que copiar dentro de un contenedor MP4 y habría que reconvertir
+      (o fallar). Pidiendo el h264/aac que YouTube ya publica, el archivo sale
+      sin tocar los bits.
+
+    El último `b` es el salto de seguridad para vídeos sin pista de vídeo
+    separada o con altura desconocida.
+    """
+    if quality <= 0:
+        return "bv[ext=mp4]+ba[ext=m4a]/bv*+ba/b"
+    return (
+        f"bv[height<={quality}][ext=mp4]+ba[ext=m4a]"
+        f"/bv[height<={quality}]+ba"
+        f"/b[height<={quality}]/b"
+    )
+
+
 def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str) -> list[str]:
     """Comando yt-dlp para descargar VÍDEO completo vía proxy SOCKS5.
 
@@ -599,20 +664,13 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str) -> l
     va a stdout, mientras que el merge de vídeo necesita un fichero real donde
     ffmpeg pueda escribir el contenedor MP4 (no se puede muxear MP4 a un pipe
     sin usar flags de fragmentado que no queremos en la salida final).
-
-    Mismo criterio de calidad que el servidor: fijada y no "best", porque el
-    cliente necesita un tamaño total fiable para el porcentaje de progreso.
     """
-    if quality <= 0:
-        fmt = "bv*+ba/b"
-    else:
-        fmt = f"bv*[height<={quality}]+ba/b[height<={quality}]/b"
     return [
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
         "--extractor-args", "youtube:player_client=android",
-        "-f", fmt,
+        "-f", video_format_selector(quality),
         "--merge-output-format", "mp4",
         "--no-playlist", "--no-part",
         "-o", os.path.join(workdir, "v.%(ext)s"),

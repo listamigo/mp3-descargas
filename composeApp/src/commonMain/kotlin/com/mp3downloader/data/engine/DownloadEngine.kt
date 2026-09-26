@@ -31,11 +31,43 @@ const val SEARCH_PAGE_SIZE: Int = 20
  */
 const val CANCELLED_ERROR: String = "Cancelado"
 
+/**
+ * Qué se descarga de un resultado.
+ *
+ * AUDIO es el MP3 de 256 kbps que el servidor produce siempre. VIDEO pide el
+ * MP4 mergeado, que solo saben hacer los motores remotos: Invidious y Piped
+ * siguen siendo de audio, y por eso declaran [DownloadEngine.supportsVideo].
+ */
+enum class MediaKind { AUDIO, VIDEO }
+
+/**
+ * Calidades de vídeo que el selector ofrece.
+ *
+ * Fijas y no "la mejor disponible": con "best" el tamaño final depende de lo
+ * que YouTube tenga publicado en ese momento, y el cliente necesita un total
+ * fiable para que el porcentaje signifique algo. Se corta en 720p a propósito:
+ * por encima el fichero se dispara y el tiempo de descarga deja de ser
+ * razonable en un móvil con datos.
+ */
+val VIDEO_QUALITIES: List<Int> = listOf(240, 360, 480, 720)
+
 interface DownloadEngine {
     suspend fun search(query: String, offset: Int = 0): Result<List<Song>>
     suspend fun getAudioStreamUrl(song: Song): Result<String>
-    fun download(song: Song, outputDir: String): Flow<DownloadResult>
+    fun download(
+        song: Song,
+        outputDir: String,
+        media: MediaKind = MediaKind.AUDIO,
+        quality: Int = 0
+    ): Flow<DownloadResult>
     suspend fun cancel(songId: String)
+
+    /**
+     * False when this engine can only ever produce audio. The chain uses it to
+     * refuse a video download up front rather than quietly handing back an MP3
+     * for a request that asked for an MP4.
+     */
+    fun supportsVideo(): Boolean = false
 
     /**
      * True while this engine's circuit breaker says the backend is down, used

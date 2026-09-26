@@ -37,9 +37,11 @@ from download_engine import (
     _base_cmd,
     _proxy_cmd,
     _proxy_cmd_video,
+    video_format_selector,
     _find_working_proxy,
     _remember_working_proxy,
     ordered_clients,
+    ordered_video_clients,
     get_client_health,
     record_success,
     po_http_provider_alive,
@@ -299,7 +301,10 @@ class APIHandler(BaseHTTPRequestHandler):
                         quality = int(params.get("quality", ["720"])[0])
                     except (TypeError, ValueError):
                         quality = 720
-                    if quality not in (360, 720, 1080):
+                    # Las mismas calidades que el selector del cliente. Si el
+                    # cliente pide otra cosa, se cae a 720p en vez de
+                    # inventar un formato que el servidor no pediría igual.
+                    if quality not in (240, 360, 480, 720):
                         quality = 720
                     logger.info(f"Descarga VIDEO proxy: {video_id} - {title} "
                                 f"({quality}p)")
@@ -479,16 +484,9 @@ class APIHandler(BaseHTTPRequestHandler):
             pass
 
     def _video_format_selector(self, quality: int) -> str:
-        """Selector de formato para vídeo.
-
-        Calidades fijas y no "best": con "best" el tamaño final depende de lo
-        que YouPub tenga publicado en ese momento y el cliente no podría
-        fiarse del total para el porcentaje. El último "b" es el salto de
-        seguridad para vídeos sin pista combinada o con altura desconocida.
-        """
-        if quality <= 0:
-            return "bv*+ba/b"
-        return f"bv*[height<={quality}]+ba/b[height<={quality}]/b"
+        """Delegado: el selector vive en download_engine para que la vía
+        directa y la del proxy no puedan divergir."""
+        return video_format_selector(quality)
 
     def _merged_video_in(self, workdir: str) -> str | None:
         """Localiza el MP4 ya mergeado en el directorio de trabajo."""
@@ -531,7 +529,7 @@ class APIHandler(BaseHTTPRequestHandler):
             direct_deadline = 0.0
         _start = time.monotonic()
 
-        for client in ordered_clients():
+        for client in ordered_video_clients():
             if time.monotonic() - _start > direct_deadline:
                 logger.info(f"Deadline de clients directos alcanzado para vídeo "
                             f"{video_id}, pasando a proxy")
