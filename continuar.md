@@ -1,18 +1,251 @@
 # Continuar — MP3 Downloader (Android KMP + desktop Python)
 
-Fecha de corte: 2026-09-25 (3ª tanda, 17:45–18:20)
-Rama: `main` · Último commit: `4d0652d perf: acota los segundos que la cadena de descarga esperaba antes del primer byte`
+Fecha de corte: 2026-09-27 (tanda del techo de 360p)
+Rama: `main` · Último commit: `c02fa12 La via directa de Railway short-circuitaba el fix con un 360p de 5-7 s`
 Repo: `/home/elimdavid/mp3 downloader/`
 
-> **Estado de la 3ª tanda:** las 2 tandas anteriores están commiteadas y
-> pusheadas a GitHub (`8ded826..4d0652d`). Se investigated y corrigió la
-> lentitud de las descargas. Build + lint en verde. Lo que queda es **medir en
-> Railway**, porque el caso problemático (IP de datacenter) no se puede
-> reproducir en local: aquí la vía directa sí funciona y nunca se pagan los
-> deadlines que se cambiaron.
+> **Lee `§A` primero.** Es el runbook: qué hacer cuando las descargas fallan
+> por proxy, en orden y con comandos. Está escrito para que funcione sin
+> tener que volver a investigar nada.
 
 ---
 
+## §A. RUNBOOK — cuando las descargas fallan o solo sale 360p
+
+Proyecto personal, sin casa propia donde apoyarse. Todo lo de aquí es para que la app **siga
+funcionando aunque el internet esté en contra**, no para dejarlo perfecto.
+
+### A.0 Lo primero: decide qué fallo es. 30 segundos, y decide todo lo demás
+
+```bash
+curl -s --max-time 25 "https://mp3downloader-server-production.up.railway.app/api/health"
+```
+
+Tres campos deciden el camino:
+
+| Campo | Qué significa | Qué hacer |
+|---|---|---|
+| `build_commit` | Qué código corre de verdad | Si no es el commit que crees estar probando, **para aquí**: §5.4, el "Redeploy" de Railway reconstruye el deployment viejo. Push + esperar. |
+| `po_script_ok` | Si el PO provider por script arranca | Si es `false`, la vía directa no va a dar nada alto (§A.3) |
+| `direct_path.available` | Si la vía directa está en cooldown | `false` = 5 min de saltarse los clients directos, normal tras un fallo |
+
+Y luego el sondeo de calidad, que es el que de verdad dice si el host puede:
+
+```bash
+curl -s --max-time 45 "https://mp3downloader-server-production.up.railway.app/api/ready?videoId=<ID>&quality=1080"
+```
+
+- `ok:true` con `estimatedBytes` **≈ 6-7 MB** → el host ve la escalera alta. Si aun así descarga 360p, el bug es tuyo, vuelve a §A.2.
+- `ok:true` con `estimatedBytes` **≈ 4,4 MB** → el host **solo ve 360p**. No es un bug: es A.3.
+- `ok:false` → el host no extrae nada por la vía directa. Normal en datacenter, sigue a §A.3.
+
+> `79ikolMBiRk` da 480p como máximo aunque todo funcione: es el techo de ESE
+> vídeo, no un fallo. Para canarios usa IDs sacados de `/api/search`.
+
+### A.1 Si falla el AUDIO (MP3) — suele ser el más fácil
+
+El MP3 usa la vía directa con `player_client=android` y **no** el PO provider.
+Si el MP3 se rompe, se rompió algo del audio, no del vídeo.
+
+```bash
+curl -s -o /tmp/prueba.mp3 -w "http=%{http_code} bytes=%{size_download} t=%{time_total}s\n" \
+  "https://mp3downloader-server-production.up.railway.app/api/download?videoId=<ID>&quality=128"
+file /tmp/prueba.mp3   # tiene que decir "Audio file with ID3 version 2.3"
+```
+
+| Síntoma | Causa | Arreglo rápido |
+|---|---|---|
+| 502 tras 60-80 s, log dice `Invidious fallback` | La vía directa está bloqueada y el proxy tampoco | §A.3 |
+| 502 tras 66 s, log dice `Sin proxy utilizable` | **`PROXY_PROBE_TIMEOUT` mata proxies sanos** (§A.4) | Subir a 12-15 s en el panel de Railway, sin desplegar |
+| 403 `unable to download video data` | yt-dlp viejo | El pin ya está en 2026.8.19; comprobar `yt_dlp_version` en `/api/health` |
+| Second attempt sin respuesta en 150 s | Railway corta la petición a los 5 min sin datos | Ver §A.5: el primer byte tardaba demasiado |
+
+### A.2 Si el VÍDEO sale a 360p cuando se pidieron 480/720/1080
+
+**Comprueba primero que el fix está desplegado y que la escalera de calidad
+está corriendo.** Con el fix, una petición que agota los intentos tarda
+**80-120 s**; si tarda **5-7 s**, el código viejo sigue sirviendo un 360p
+sin comprobar. Pasa a §A.3 para el caso normal.
+
+Si tarda 80-120 s y aun así sale 360p, el fix está bien y lo que falla es que
+**los proxies que encuentra no dan la escalera alta**. Solución rápida:
+
+**Fijar un proxy bueno.** Es lo que más rinde y no toca código:
+
+```bash
+# En el panel de Railway: Settings -> Variables -> WORKING_PROXY
+WORKING_PROXY=socks5://<ip>:<port>
+```
+
+Cómo encontrar uno que valga (2 minutos, desde tu máquina):
+
+```bash
+python3 tools/diagnostico/probe.py <videoId> 100
+```
+
+Ese script sondea GeoNode igual que el servidor y printa los proxies que
+resuelven. Coge el primero que imprima `FUNCIONA` y pínalo. Los gratuitos
+duran **30-60 min**, así que hay que re-pinarlos cuando se mueran; para eso
+está `_persist_working_proxy`.
+
+Con el proxy fijado, las descargas bajan de 80 s a 15-25 s **y** la probabilidad
+de 1080p sube mucho, porque ya no se gasta el presupuesto en proxies muertos.
+
+### A.3 "El host solo ve 360p" — el techo de verdad
+
+Esto **no es un bug** y no se arregla con código. Es lo que mide §A.0.
+
+Por qué: sin proxy residencial, la extracción por IP de datacenter llega hasta
+donde le deja el PO token. Y el PO token, cuando lo hay, **no** da formato
+alto: da acceso a la escalera, pero el formato alto en muchas ladders exige
+además que la IP no esté marcada.
+
+Medido el 2026-09-27 (esto es lo que hay que saber, no lo que se sospechaba):
+
+| Vía | Qué consigue |
+|---|---|
+| Directa en datacenter, con PO script | Solo el muxed de 360p. `/api/ready` lo confirma: 4,4 MB para cualquier calidad |
+| Directa desde IP residencial (tu PC) | 1080p y 720p sin problema, en 8-10 s |
+| **Por SOCKS5 gratuito** | **La escalera alta SÍ aparece**: `yt-dlp -F` lista 1080p (itag 137) y 720p (itag 136) |
+| Por SOCKS5, **al descargar** | Sale 1080p ~1 de cada 3 veces. Las otras dos, 360p |
+
+Lo último es la clave y explica todo lo que se ha visto: **la escalera alta está
+disponible pero la extracción la degrada de forma intermitente**, y no depende
+del proxy (el mismo proxy dio 360p, 360p y 1080p en tres descargas seguidas).
+El selector de formatos acaba en `/b[height<=q]/b`, así que cuando la pista alta
+no se puede coger devuelve el 360p **sin decir nada**.
+
+**Solución rápida y honesta:** para no gastar tiempo, fija `MAX_PROXY_ATTEMPTS`
+a 4-5 en el panel de Railway (sin desplegar). Cada intento es una tirada
+independiente de la lotería, y con 4-5 la probabilidad de alguno salga 1080p
+sube de ~70 % a ~87 %. Y acepta 360p como resultado válido: la app ya lo
+etiqueta con la altura real, así que el usuario ve "MP4 360p" y no una
+mentira.
+
+**Solución de verdad:** proxy residencial (`RESIDENTIAL_PROXY` en el entorno del
+servidor). Es lo único que quita el 403 directo, da 1080p estable y elimina
+la lotería. Es la decisión pendiente de §5.6 y no la ha tomado nadie.
+
+### A.4 El fallo que costó más y era invisible: el sondeo de proxy
+
+`PROXY_PROBE_TIMEOUT` estaba en **6 s** y un proxy **sano** tarda **7,6-9,7 s**
+en `--get-url`. O sea: **mataba todos los proxies que funcionaban** y acababa
+con `Sin proxy utilizable` + 502, con el proxy perfectamente sano.
+
+Lo hizo invisible que el `except Exception` del sondeo se tragase el
+`TimeoutExpired` sin registrarlo, de modo que en el log solo se veía
+"no hay proxies", que es exactamente lo que parece un problema de proxies.
+
+Ya está arreglado en el código (12 s, y el timeout se loguea). Si vuelve a
+pasar, se adjusta **desde el panel de Railway, sin desplegar**:
+
+```
+PROXY_PROBE_TIMEOUT=15     # si los proxies tardan más
+PROXY_SEARCH_BUDGET_S=90   # si la lista de GeoNode está llena de muertos
+FREE_PROXY_CANDIDATES=60   # por defecto
+```
+
+Medido también: de ~50-100 candidatos de GeoNode, **solo 1-3 pasan el filtro
+TCP y resuelven**. Es una lista terrible y va a fallar a menudo. No es un bug
+tuyo, es la materia prima.
+
+### A.5 Si las descargas tardan minutos o Railway corta la conexión
+
+Railway cierra la petición a los **5 min sin datos que fluyan**. El MP3 no manda
+cabeceras hasta tener los primeros 8192 bytes, así que si el primer byte tarda
+más que eso, Railway corta sin responder.
+
+Por eso el `DIRECT_CLIENTS_DEADLINE` existe. Si las descargas tardan mucho de
+entrada:
+
+```
+DIRECT_CLIENTS_DEADLINE=0    # saltarse la vía directa EN SEGUNDA, ir a proxy ya
+```
+
+Y para que la UI no parezca colgada, Pending de §5.6 (0 % durante la búsqueda
+de proxy) sigue **sin hacer**. Es cosmético, pero es lo primero que piensa el
+usuario cuando falla.
+
+### A.6 Los scripts de diagnóstico
+
+**Están en el repo**, en `tools/diagnostico/`, con su propio README. No están
+en `/tmp` (que es donde empezaron y donde se habrían perdido):
+
+| Script | Para qué | Toca la red |
+|---|---|---|
+| `test_techo.py` | Banco de pruebas del fix de calidad. **El primero que hay que ejecutar si tocas `_proxy_video_download`.** 10 casos, 1 s | No |
+| `probe.py` | Encontrar un proxy SOCKS5 que sirva, para llenar `WORKING_PROXY` | Sí |
+| `altura.py` | Qué altura da cada client, con y sin el plugin bgutil | Sí |
+| `descarga.py` | Descarga real con el comando exacto del servidor. **Correr 3 veces seguidas** | Sí |
+
+```bash
+cd "/home/elimdavid/mp3 downloader"
+python3 tools/diagnostico/test_techo.py
+python3 tools/diagnostico/probe.py <videoId> 100
+python3 tools/diagnostico/altura.py <proxy> <videoId>
+python3 tools/diagnostico/descarga.py <proxy> <videoId> 1080 mweb
+```
+
+`descarga.py` 3 veces seguidas es como se descubrió el 1-de-3. Con una sola
+tirada no se ve y se sacan conclusiones equivocadas.
+
+### A.7 Las dos hipótesis que la doc daba por buenas y NO eran la causa
+
+La sesión anterior dejó dos teorías. **Las dos se midieron y las dos son
+falsas.** No volver a investigarlas:
+
+1. *"El plugin `bgutil-ytdlp-pot-provider` se auto-activa y rompe la extracción
+   de `mweb` en el contenedor."* Falsa. Medido: con el plugin activo `mweb` da
+   1080p (15,2 s); con `youtubepot-bgutilscript:skip=true` también lo da
+   (18,6 s). La diferencia entre una corrida y otra es ruido, no el plugin.
+2. *"El proxy gratuito rota y por eso Railway da 360p."* Parcialmente cierta
+   (la lista es pésima y los proxies mueren en 30-60 min) pero **no era la
+   causa del 360p**: el mismo proxy dio 360p, 360p y 1080p seguido. La causa
+   era que el servidor servía el primer resultado sin mirar su altura.
+
+Y una tercera que parecía cierta y no: *"la vía directa de Railway está
+bloqueada"*. Dejó de estarlo durante esta tanda: el PO provider por script
+arranca (`po_script_ok: true`) y `/api/ready` pasó a `ok:true`. Pero **sin
+proxy solo da 360p**, así que "directa disponible" no significa "directa útil".
+
+### A.8 Commits de esta tanda
+
+| Commit | Qué hace |
+|---|---|
+| `6d96128` | Mide la altura del MP4 y **no sirve un resultado por debajo de lo pedido** mientras queden intentos. Valida la caché por altura, no por el nombre del fichero. |
+| `2398912` | `PROXY_PROBE_TIMEOUT` 6 → 12 s, y el `TimeoutExpired` del sondeo se registra en vez de desaparecer. |
+| `c02fa12` | Aplica el mismo criterio a la **vía directa**, que en Railway cortocircuitaba el proxy entero con un 360p de 5-7 s. Extrae `_keep_as_fallback` para que las dos rutas compartan la lógica. |
+
+Los tres están pusheados y desplegados (`build_commit: c02fa12`).
+
+**Los tres son solo servidor.** El APK no se toca: ya etiqueta la altura real
+de `X-Video-Height` desde el commit `76bbbf7`.
+
+### A.9 Estado medido en producción con el fix desplegado
+
+| Petición | Antes del fix | Con el fix |
+|---|---|---|
+| 1080p | 200 en 5-7 s, `x-video-height: 360` | 200 en **81 s**, `x-video-height: 360` |
+
+Los 81 s son la prueba de que **la escalera de calidad está corriendo**: son los
+3 intentos por proxy agotados, ya no un solo tiro. Lo que sigue falling es que
+ninguno de esos 3 proxies dio 1080p en ese momento, que es §A.3.
+
+**Pendiente de medir cuando lo intentes:** con `WORKING_PROXY` fijado a un
+proxy que acabe de dar 1080p, el resultado esperado baja a 15-25 s con
+`x-video-height: 1080`. Si sigue a 360p con el proxy recién GOOD, el siguiente
+paso es `descarga.py` 3 veces con ese proxy para ver si el uno-de-tres se
+mantiene desde Railway.
+
+---
+
+## 2026-09-27 — Descargas de vídeo RESTAURADAS; el techo de 360p sigue abierto
+
+> **SUPERADO por §A.** Esta sección se conserva como histórico del diagnóstico.
+> La conclusión a la que llegaba ("es un bug del PO token provider o el proxy
+> rota") era **incorrecta**; §A.2 y §A.7 tienen la causa real y medida.
+
+**Lee esto antes que nada: las descargas FUNCIONAN de nuevo (MP3 y vídeo). Lo que NO está resuelto es la calidad: se pida 480/720/1080, el vídeo llega 360p.** El APK no necesita cambios (ya etiqueta la altura real de `X-Video-Height`); el fix es 100 % servidor.
 ## 2026-09-27 — Descargas de vídeo RESTAURADAS; el techo de 360p sigue abierto
 
 **Lee esto antes que nada: las descargas FUNCIONAN de nuevo (MP3 y vídeo). Lo que NO está resuelto es la calidad: se pida 480/720/1080, el vídeo llega 360p.** El APK no necesita cambios (ya etiqueta la altura real de `X-Video-Height`); el fix es 100 % servidor.
