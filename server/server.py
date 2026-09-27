@@ -866,11 +866,19 @@ class APIHandler(BaseHTTPRequestHandler):
                     if _is_too_big_error(last_err):
                         self._reject_too_big(video_id, quality, None)
                         return
-                    if not _is_auth_error(last_err):
-                        break
+                    # Sin `break`: ANTES solo se reintentaba con android si el
+                    # fallo era de auth, pero en Railway (datacenter) el fallo
+                    # típico de web_embedded es "Requested format is not
+                    # available" (extrae 0 formatos) — y ese caso cortaba la
+                    # escalera dejando sin probar el suelo android (itag 18),
+                    # que es el ÚNICO client que funciona sin token en esta IP
+                    # (es el mismo que hace funcionar el MP3). Medido el 27-09:
+                    # quality=360 daba 502 en 84 s por esto. Coste: cuando el
+                    # vídeo de verdad no existe, android añade ~60-90 s antes
+                    # del 502, pero deja de bloquear los vídeos que sí se pueden.
                     logger.info(
-                        "Vídeo %s: fallo de token/cookies, reintento con android",
-                        video_id,
+                        "Vídeo %s: web_embedded falló (%.120s), reintentando con android",
+                        video_id, last_err.replace("\n", " "),
                     )
                 blocked.add(proxy)
                 logger.warning(f"Vídeo falló por proxy {proxy}: {last_err}")
