@@ -505,6 +505,20 @@ class APIHandler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
+    @classmethod
+    def _file_height(cls, path: str) -> int:
+        """Altura del MP4, o 0 si no se puede leer. Para comparar candidatos."""
+        dims = cls._video_dimensions(path)
+        return dims[1] if dims else 0
+
+    @staticmethod
+    def _discard(path: str) -> None:
+        """Borra un fichero intermedio sin que un error de disco tumbe la descarga."""
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
     def _serve_file(self, path: str, content_type: str, video_id: str) -> bool:
         """Sirve un fichero ya descargado con Content-Length real.
 
@@ -742,8 +756,21 @@ class APIHandler(BaseHTTPRequestHandler):
         download_path = self._get_download_path(video_id, ext=".mp4", quality=quality)
         os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
 
-        if self._serve_file(download_path, "video/mp4", video_id):
-            return
+        # La caché se valida contra la calidad pedida ANTES de servirla. Sin
+        # esto, un 360p que se guardara con la petición de 1080p se servía para
+        # siempre: el nombre del fichero lleva la calidad (safe_id_q1080.mp4)
+        # pero no la altura, así que la entrada parecía correcta y era mentira.
+        # Es justo lo que dejó a Railway sirviendo 360p durante días.
+        if os.path.isfile(download_path) and os.path.getsize(download_path) > 1024:
+            cached_h = self._file_height(download_path)
+            if not cached_h or cached_h >= quality:
+                if self._serve_file(download_path, "video/mp4", video_id):
+                    return
+            else:
+                logger.info(
+                    "Cache de %s a %dp no cumple los %dp pedidos; se descarta "
+                    "y se vuelve a descargar", video_id, cached_h, quality)
+                self._discard(download_path)
 
         # Antes de gastar una descarga entera, mirar cuánto va a ocupar. Es la
         # diferencia entre "no se puede" en 2 segundos y "no se puede" después de
@@ -827,21 +854,25 @@ class APIHandler(BaseHTTPRequestHandler):
             record_direct_failure()
         blocked: set = set()
         max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
+        # Último recurso: el mejor MP4 que se haya conseguido aunque sea más
+        # bajo que lo pedido. Existe para que insistir por la calidad NO pueda
+        # acabar en un 502 donde antes había un 200 (aunque fuera de 360p).
+        fallback_path: str | None = None
         for _attempt in range(max_proxy_attempts):
             proxy = _find_working_proxy(video_id, blocked=blocked)
             if not proxy:
                 break
             workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
+            got_short = False
             try:
-                logger.info(f"Vídeo {video_id} por proxy {proxy}")
+                logger.info(f"Vídeo {video_id} ({quality}p) por proxy {proxy} "
+                            f"— intento {_attempt + 1}/{max_proxy_attempts}")
                 # Escalera de clients del proxy, UNO POR COMANDO. mweb va
-                # PRIMERO ahora que _proxy_cmd_video lleva el PO token provider
-                # (2026-09-27): es el client que expone la escalera completa y
-                # con token sirve hasta 720p/1080p incluso desde datacenter —
-                # es exactamente el combo que ya funciona en /api/ready.
-                # Detrás quedan web_embedded (escalera sin garantía de token)
-                # y android (muxed itag 18 de 640x360, sin token, el suelo que
-                # siempre cierra la escalera para no devolver 502).
+                # PRIMERO: es el que expone la escalera completa y con token
+                # sirve hasta 720p/1080p incluso desde datacenter. Detrás quedan
+                # web_embedded (escalera sin garantía de token) y android (muxed
+                # itag 18 de 640x360, sin token, el suelo que siempre cierra la
+                # escalera para no devolver 502).
                 for clients in ("mweb", "web_embedded", "android"):
                     cmd = _proxy_cmd_video(video_id, proxy, quality, workdir,
                                            clients=clients,
@@ -854,10 +885,55 @@ class APIHandler(BaseHTTPRequestHandler):
                     if merged:
                         if not self._enforce_video_size(merged, video_id, quality):
                             return
-                        os.replace(merged, download_path)
-                        self._cleanup_download_cache()
-                        self._serve_file(download_path, "video/mp4", video_id)
-                        return
+                        dims = self._video_dimensions(merged)
+                        got_h = dims[1] if dims else 0
+                        if not got_h or got_h >= quality:
+                            os.replace(merged, download_path)
+                            self._cleanup_download_cache()
+                            self._serve_file(download_path, "video/mp4", video_id)
+                            return
+                        # ── EL FIX DEL TECHO DE 360p ──
+                        # Salió un fichero, pero por debajo de lo pedido. Antes
+                        # se servía tal cual y por eso la app recibía 360p casi
+                        # siempre. Medido el 2026-09-27 con un SOCKS5 gratuito
+                        # y el MISMO comando, tres descargas seguidas del mismo
+                        # vídeo dieron 360p, 360p y 1920x1080: la escalera
+                        # alta está disponible pero la extracción la degrada de
+                        # forma intermitente, y no depende del proxy (el mismo
+                        # proxy dio las tres). Servir el primer resultado era
+                        # exactamente dejar la lotería sin repetir.
+                        #
+                        # Así que un resultado corto NO se sirve mientras queden
+                        # intentos: se aparta como último recurso y se vuelve a
+                        # intentar. El coste es el mismo que antes (los intentos
+                        # ya se contaban) pero ahora apuntan a la calidad pedida.
+                        # Un nombre POR INTENTO: con un nombre fijo el segundo
+                        # resultado corto pisaba al primero y se perdía el mejor
+                        # (un 480p se sustituía por un 360p posterior).
+                        keep = f"{download_path}.bajo{_attempt}"
+                        got_short = True
+                        try:
+                            os.replace(merged, keep)
+                        except OSError:
+                            keep = None
+                        if keep and (fallback_path is None
+                                     or self._file_height(keep) > self._file_height(fallback_path)):
+                            if fallback_path:
+                                self._discard(fallback_path)
+                            fallback_path = keep
+                        else:
+                            if keep:
+                                self._discard(keep)
+                            if os.path.exists(merged):
+                                self._discard(merged)
+                        logger.info(
+                            "Vídeo %s: %s devolvió %dp, se buscaban %dp; reintentando",
+                            video_id, clients, got_h, quality)
+                        # Otro client del MISMO proxy no mejora: el problema es
+                        # que la extracción sale degradada, no el client. Se
+                        # corta la escalera y se gasta otro intento (que puede
+                        # ser otro proxy) en vez de quemarlo en 20 s más.
+                        break
                     last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
                     if _is_too_big_error(last_err):
                         self._reject_too_big(video_id, quality, None)
@@ -873,11 +949,17 @@ class APIHandler(BaseHTTPRequestHandler):
                     # vídeo de verdad no existe, android añade ~60-90 s antes
                     # del 502, pero deja de bloquear los vídeos que sí se pueden.
                     logger.info(
-                        "Vídeo %s: web_embedded falló (%.120s), reintentando con android",
-                        video_id, last_err.replace("\n", " "),
+                        "Vídeo %s: %s falló (%.120s), siguiente client de la escalera",
+                        video_id, clients, last_err.replace("\n", " "),
                     )
-                blocked.add(proxy)
-                logger.warning(f"Vídeo falló por proxy {proxy}: {last_err}")
+                # Un proxy que entregó un resultado CORTO no se bloquea: medido,
+                # el proxy no es lo que falla (el mismo dio 1080p una de cada
+                # tres veces), así que dejarlo disponible permite que un
+                # reintento lo reutilice y no se pague otra búsqueda de 60 s.
+                # Un proxy que no entregó nada (falló entero) sí se aparta.
+                if not got_short:
+                    blocked.add(proxy)
+                logger.warning(f"Vídeo no servido por proxy {proxy}: {last_err}")
             except subprocess.TimeoutExpired:
                 last_err = "timeout en el proxy"
                 blocked.add(proxy)
@@ -888,6 +970,16 @@ class APIHandler(BaseHTTPRequestHandler):
                 logger.warning(f"Vídeo excepción por proxy {proxy}: {e}")
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
+
+        if fallback_path and os.path.isfile(fallback_path):
+            # Se agotaron los intentos sin llegar a la calidad pedida. Servir
+            # lo mejor que se tenga es mejor que un 502, y la app lo etiqueta
+            # con la altura real porque la mandamos en X-Video-Height.
+            os.replace(fallback_path, download_path)
+            logger.info(f"Vídeo {video_id}: se sirve {download_path} a la altura "
+                        f"real por agotar los intentos a {quality}p")
+            self._serve_file(download_path, "video/mp4", video_id)
+            return
 
         self._json(502, {
             "error": "No se pudo descargar el vídeo",
