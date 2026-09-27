@@ -140,9 +140,18 @@ YTDLP_RETRIES = int(os.environ.get("YTDLP_RETRIES", "3"))
 YTDLP_SOCKET_TIMEOUT = int(os.environ.get("YTDLP_SOCKET_TIMEOUT", "20"))
 
 # Cuánto esperar un proxy para que responda antes de pagarlo con yt-dlp.
-# Un proxy que resuelve --get-url en ~3s es el caso bueno; uno que tarda
-# más que esto no va a improve y solo consume el deadline del request.
-PROXY_PROBE_TIMEOUT = int(os.environ.get("PROXY_PROBE_TIMEOUT", "6"))
+#
+# Medido el 2026-09-27 con un SOCKS5 de GeoNode que SÍ funcionaba: el mismo
+# `--get-url` tardó 7,6 s, 9,2 s y 9,7 s en tres intentos seguidos. Con el
+# valor anterior de 6 s ese proxy se descartaba SIEMPRE por timeout y el
+# servidor acababa con "Sin proxy utilizable" y un 502, cuando el proxy
+# estaba perfectamente sano. El error era invisible porque el `except` del
+# sondeo se tragaba el TimeoutExpired sin registrarlo; ahora se registra.
+#
+# 12 s da margen sobre lo medido sin abrir la puerta a que un proxy muerto se
+# coma medio minuto: los que ni aceptan conexión los quita antes el filtro TCP
+# de TCP_PROBE_TIMEOUT (1,5 s), que es la capa que descarta a la mayoría.
+PROXY_PROBE_TIMEOUT = int(os.environ.get("PROXY_PROBE_TIMEOUT", "12"))
 
 # ═══════════════════════════════════════════════════════════════
 # Circuit breaker por player client
@@ -941,7 +950,15 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
                 # (la firma de googlevideo puede fallar al descargar). Solo
                 # _stream_proxy_download lo marca al CONFIRMAR la descarga.
                 return proxy
-        except Exception:
+        except subprocess.TimeoutExpired:
+            # Antes caía en el `except Exception` de abajo y desaparecía sin
+            # dejar rastro, que es como un timeout de sondeo mal calibrado
+            # acaba pareciendo "no hay proxies" en el log.
+            logger.debug(f"Proxy {proxy} no respondió el --get-url en "
+                         f"{PROXY_PROBE_TIMEOUT:.0f}s, descartado")
+            continue
+        except Exception as e:
+            logger.debug(f"Proxy {proxy} falló en el sondeo: {e}")
             continue
     logger.info(f"Sin proxy utilizable para {video_id} "
                 f"({probed} probados tras filtro TCP de {len(candidates)}"
