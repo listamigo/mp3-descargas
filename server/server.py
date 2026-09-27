@@ -519,6 +519,30 @@ class APIHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _keep_as_fallback(self, merged: str, keep: str,
+                          current: str | None, got_h: int) -> bool:
+        """Aparta un MP4 más bajo de lo pedido como último recurso.
+
+        Devuelve True si `keep` queda siendo el mejor de los que hay, y en
+        ese caso `merged` ya no existe (se movió). Si no mejora a lo que ya
+        había, se borra el nuevo y se queda el anterior: perder el 480p
+        porque después salió un 360p sería tan malo como no mirar la altura.
+
+        Un nombre POR ORIGEN y no uno compartido: con un nombre fijo el
+        segundo resultado corto pisaba al primero.
+        """
+        try:
+            os.replace(merged, keep)
+        except OSError:
+            self._discard(merged)
+            return False
+        if current is not None and self._file_height(keep) <= self._file_height(current):
+            self._discard(keep)
+            return False
+        if current is not None:
+            self._discard(current)
+        return True
+
     def _serve_file(self, path: str, content_type: str, video_id: str) -> bool:
         """Sirve un fichero ya descargado con Content-Length real.
 
@@ -784,6 +808,11 @@ class APIHandler(BaseHTTPRequestHandler):
         url = f"https://youtube.com/watch?v={video_id}"
         timeout_s = int(os.environ.get("VIDEO_DOWNLOAD_TIMEOUT", "420"))
         last_err = ""
+        # Último recurso, COMPARTIDO por las dos rutas: el mejor MP4 que se haya
+        # conseguido aunque sea más bajo que lo pedido. Existe para que insistir
+        # por la calidad NO pueda acabar en un 502 donde antes había un 200
+        # (aunque fuera de 360p).
+        fallback_path: str | None = None
 
         # ── 1. Clients directos, con el mismo deadline que el audio ──
         # 25s, no 8s. Medido el 2026-09-26: una descarga que SÍ funciona tarda
@@ -824,11 +853,30 @@ class APIHandler(BaseHTTPRequestHandler):
                     # fichero se borra en vez de quedarse ocupando disco.
                     if not self._enforce_video_size(merged, video_id, quality):
                         return
-                    os.replace(merged, download_path)
-                    self._cleanup_download_cache()
-                    record_success(client)
-                    self._serve_file(download_path, "video/mp4", video_id)
-                    return
+                    dims = self._video_dimensions(merged)
+                    got_h = dims[1] if dims else 0
+                    if not got_h or got_h >= quality:
+                        os.replace(merged, download_path)
+                        self._cleanup_download_cache()
+                        record_success(client)
+                        self._serve_file(download_path, "video/mp4", video_id)
+                        return
+                    # Mismo criterio que en la ruta del proxy, y hace falta aquí
+                    # por un motivo medido el 2026-09-27: la vía directa de
+                    # Railway volvió a funcionar (el PO provider por script ya
+                    # arranca, /api/ready pasa a ok:true), pero SIN proxy solo
+                    # consigue el muxed de 360p. Antes esta rama servía ese
+                    # 360p tal cual en 5-7 s y cortocircuitaba la escalera del
+                    # proxy, que es la que sí llega a 1080p.
+                    keep = f"{download_path}.bajo_directo{client}"
+                    if self._keep_as_fallback(merged, keep, fallback_path, got_h):
+                        fallback_path = keep
+                    logger.info(
+                        "Vídeo %s: client directo %s devolvió %dp, se buscaban "
+                        "%dp; se sigue buscando", video_id, client, got_h, quality)
+                    # No se corta el bucle: otro client directo puede exponer la
+                    # escalera alta, y el deadline de arriba lo acota igual.
+                    continue
                 last_err = (proc.stderr or b"").decode(errors="replace")[-300:]
                 if _is_too_big_error(last_err):
                     self._reject_too_big(video_id, quality, None)
@@ -854,10 +902,6 @@ class APIHandler(BaseHTTPRequestHandler):
             record_direct_failure()
         blocked: set = set()
         max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
-        # Último recurso: el mejor MP4 que se haya conseguido aunque sea más
-        # bajo que lo pedido. Existe para que insistir por la calidad NO pueda
-        # acabar en un 502 donde antes había un 200 (aunque fuera de 360p).
-        fallback_path: str | None = None
         for _attempt in range(max_proxy_attempts):
             proxy = _find_working_proxy(video_id, blocked=blocked)
             if not proxy:
@@ -907,25 +951,10 @@ class APIHandler(BaseHTTPRequestHandler):
                         # intentos: se aparta como último recurso y se vuelve a
                         # intentar. El coste es el mismo que antes (los intentos
                         # ya se contaban) pero ahora apuntan a la calidad pedida.
-                        # Un nombre POR INTENTO: con un nombre fijo el segundo
-                        # resultado corto pisaba al primero y se perdía el mejor
-                        # (un 480p se sustituía por un 360p posterior).
-                        keep = f"{download_path}.bajo{_attempt}"
                         got_short = True
-                        try:
-                            os.replace(merged, keep)
-                        except OSError:
-                            keep = None
-                        if keep and (fallback_path is None
-                                     or self._file_height(keep) > self._file_height(fallback_path)):
-                            if fallback_path:
-                                self._discard(fallback_path)
+                        keep = f"{download_path}.bajo{_attempt}"
+                        if self._keep_as_fallback(merged, keep, fallback_path, got_h):
                             fallback_path = keep
-                        else:
-                            if keep:
-                                self._discard(keep)
-                            if os.path.exists(merged):
-                                self._discard(merged)
                         logger.info(
                             "Vídeo %s: %s devolvió %dp, se buscaban %dp; reintentando",
                             video_id, clients, got_h, quality)
