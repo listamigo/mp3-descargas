@@ -13,6 +13,58 @@ Repo: `/home/elimdavid/mp3 downloader/`
 
 ---
 
+## 2026-09-27 — Descargas de vídeo RESTAURADAS; el techo de 360p sigue abierto
+
+**Lee esto antes que nada: las descargas FUNCIONAN de nuevo (MP3 y vídeo). Lo que NO está resuelto es la calidad: se pida 480/720/1080, el vídeo llega 360p.** El APK no necesita cambios (ya etiqueta la altura real de `X-Video-Height`); el fix es 100 % servidor.
+
+### Lo arreglado, en orden
+
+| Commit | Qué hace |
+|---|---|
+| `db27488` | Revert del rollback `7f357cb`: el servidor vuelve a la versión con selección de calidad (reactiva lo de `6092d3b`/`959826f`/`94162b8`). El rollback original solo tocó `server/` y dejó el cliente Android sin revertir: por eso "el rollback no arreglaba nada". |
+| `65f3f9d` | **El bug que tumbó TODO el vídeo**: en la escalera del proxy, cuando `web_embedded` fallaba con "Requested format is not available" (extrae 0 formatos; NO es error de auth) un `break` cortaba la escalera y el suelo `android` (itag 18) **nunca se probaba** → hasta 360p daba 502 en 84 s. Sin el `break`, 360p vuelve siempre. |
+| `d88f004`, `b4f65c3` | Intentos de subir el techo: primero se añadió el PO provider a la ruta proxy, luego se quitó. Estado actual (`b4f65c3`): escalera del proxy = `mweb` → `web_embedded` → `android`, SIN sufijo PO en la ruta proxy; la vía directa conserva su provider (`_base_cmd`). |
+
+### Estado medido (Railway, build `b4f65c3`)
+
+| Petición | Resultado |
+|---|---|
+| MP3 (`/api/download` normal) | ✅ 200, 6,6 MB, ~23 s |
+| Vídeo 360p | ✅ 200, 4,4 MB, ~8,5 s |
+| Vídeo 720p / 1080p | ⚠️ 200 pero llega 360p (`x-video-height: 360`) |
+| `/api/ready` 720p | `ok:true` con tamaño estimado → la extracción directa funciona intermitentemente |
+| Descarga de vídeo por vía directa | 403 del CDN de googlevideo (extracción OK, los bytes no) — confirmado antes en `7f357cb` |
+
+### La contradicción que hay que resolver (EMPEZAR AQUÍ)
+
+**Local, vía el MISMO proxy gratuito que usa Railway, 1080p se baja entera:**
+
+```bash
+# Escalera completa (itag 136 = 720p, 137 = 1080p) SIN token y con mweb:
+yt-dlp -F --proxy socks5://49.13.22.249:10805 \
+  --extractor-args "youtube:player_client=mweb" "https://youtube.com/watch?v=f665ujaFwHA"
+# Descarga real del 137: OK, 3,3 MB en 7 s
+yt-dlp -f 137 --proxy socks5://49.13.22.249:10805 -o /tmp/t137.mp4 \
+  "https://youtube.com/watch?v=f665ujaFwHA"
+```
+
+En Railway el mismo camino (mweb por proxy) sirve 360p. Dos hipótesis, en este orden:
+
+1. **El plugin `bgutil-ytdlp-pot-provider` está instalado por pip en Railway** (`Dockerfile.railway`) y se AUTO-activa en toda extracción de YouTube aunque el comando no lleve `--extractor-args`. Si su generación de token falla dentro del contenedor, puede abortar la extracción de `mweb` entera (comportamiento medido el 26-09: un provider presente pero muerto rompe la extracción). Prueba: quitarlo SOLO para la ruta proxy (`pip uninstall` en el Dockerfile es global; mejor empezar mirando el log) o desactivarlo con `--extractor-args "youtubepot-bgutilscript:skip=true"`.
+2. **El proxy gratuito rota**: mi prueba usó `49.13.22.249:10805` (el mismo que Railway usó a las 12:50, pero en un request posterior puede tocar otro). Prueba: fijar en Railway `WORKING_PROXY=socks5://49.13.22.249:10805` y re-medir sin lotería.
+
+**Primer paso concreto y barato:** descargar un vídeo 720p en Railway con `b4f65c3` y mirar el log de la línea `Vídeo falló por proxy ...: <stderr>`: si el stderr de `mweb` menciona el provider/po token → hipótesis 1; si dice "Requested format is not available" o sale otro proxy → hipótesis 2.
+
+Si nada de esto sube el techo: la solución real sigue siendo un **proxy residencial** (decisión del usuario, ver §5.6). Ojo: `79ikolMBiRk` solo llega a 480p aunque todo funcione — es el máximo del vídeo, no un bug.
+
+### Pendientes que siguen vigentes
+
+- **Revocar el PAT de GitHub `ghp_wPf…`**: se pegó en el chat el 27-09 y quedó expuesto. No se usó ni se guardó, pero hay que revocarlo y rotarlo.
+- §5.8: `desktop/` y `deb-package/` siguen sin trackear; no subirlos.
+- §5.6: errores de yt-dlp en inglés en la app, 0 % durante la búsqueda de proxy, estimación de tamaño previa muerta.
+
+---
+
 ## 0.0 RESUELTO EN LA 4ª TANDA: EL SERVIDOR POR DEFECTO ERA RENDER (léelo primero)
 
 **El problema de descargas que duraba desde la 1ª tanda era que la app apuntaba a Render, y Render no puede descargar. Ya está arreglado y verificado en un móvil real.**
