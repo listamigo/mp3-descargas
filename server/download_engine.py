@@ -832,28 +832,6 @@ def video_format_selector(quality: int) -> str:
     )
 
 
-def _po_provider_suffix() -> str:
-    """Sufijo `;provider=...` para el --extractor-args, IGUAL formato que _base_cmd.
-
-    En la imagen de Railway el provider vive en BGUTIL_SERVER_HOME y el token
-    se genera por request (vía script); el provider HTTP solo se añade si de
-    verdad responde. Sin esto, la ruta de vídeo por proxy extraía 0 formatos
-    altos (sin token) y siempre caía al suelo android de 360p. Devuelve ""
-    si no hay provider configurado.
-
-    NOTA de formato: _base_cmd une los pares con `;` dentro de UN solo
-    --extractor-args (youtube:player_client=X;youtubepot-bgutilscript:...).
-    Ese formato es el verificado funcionando en producción (/api/ready), así
-    que se replica tal cual en vez de inventar un flag aparte.
-    """
-    suffix = ""
-    if BGUTIL_SERVER_HOME:
-        suffix += f";youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}"
-    if po_http_provider_alive():
-        suffix += f";youtubepot-bgutilhttp:base_url={PO_TOKEN_PROVIDER_URL}"
-    return suffix
-
-
 def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
                      clients: list[str] | None = None,
                      max_bytes: int | None = None) -> list[str]:
@@ -868,13 +846,14 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
         "yt-dlp", "--no-warnings",
         "--proxy", proxy,
         "--user-agent", random.choice(USER_AGENTS),
-        "--extractor-args",
-        _player_client_arg(clients or ordered_video_clients())
-        + _po_provider_suffix(),
-        # PO token provider (sufijo de arriba) — el mismo cableado que usa la
-        # vía directa en _base_cmd. Sin token, una IP de datacenter (la del
-        # proxy SOCKS5) extrae 0 formatos altos y el selector cae siempre al
-        # muxed de 360p.
+        "--extractor-args", _player_client_arg(clients or ordered_video_clients()),
+        # SIN sufijo de PO provider aqui, medido el 2026-09-27: mweb por
+        # proxy SIN argumentos de token extrae la escalera completa Y
+        # descarga el itag 137 de 1080p (verificado localmente por el mismo
+        # SOCKS5 que usa Railway). Con el sufijo bgutilscript, si el provider
+        # falla dentro del contenedor, la extraccion de mweb hereda el fallo
+        # y no devuelve NADA -> cascada al suelo android de 360p. La via
+        # directa (_base_cmd) SI lleva su provider; esta ruta no.
         "-f", video_format_selector(quality),
         "--merge-output-format", "mp4",
         "--no-playlist", "--no-part",
