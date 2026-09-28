@@ -64,12 +64,15 @@ fi
 # ─── Configurar extractor args para PO token provider ────
 # Si el PO token provider está corriendo, configurar yt-dlp
 # para que lo use automáticamente.
-if curl -s --max-time 2 "http://127.0.0.1:$PO_PROVIDER_PORT/" >/dev/null 2>&1; then
-    export PO_TOKEN_PROVIDER_URL="http://127.0.0.1:$PO_PROVIDER_PORT"
-    echo "🎯 PO token provider configurado: $PO_TOKEN_PROVIDER_URL"
-else
-    echo "⚠️  PO token provider no disponible, las descargas usarán cookies/proxies"
-fi
+# DESHABILITADO: Provider HTTP frágil en Render free (OOM). Usamos
+# solo BGUTIL_SERVER_HOME (youtubepot-bgutilscript) que genera tokens
+# por request sin server persistente.
+# if curl -s --max-time 2 "http://127.0.0.1:$PO_PROVIDER_PORT/" >/dev/null 2>&1; then
+#     export PO_TOKEN_PROVIDER_URL="http://127.0.0.1:$PO_PROVIDER_PORT"
+#     echo "🎯 PO token provider configurado: $PO_TOKEN_PROVIDER_URL"
+# else
+    echo "⚠️  PO token provider HTTP deshabilitado; usando script provider (BGUTIL_SERVER_HOME)"
+# fi
 
 # ─── Arrancar servidor principal ──────────────────────────
 echo "🎵 Iniciando servidor HTTP en puerto ${PORT:-8899}..."
