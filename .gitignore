@@ -32,6 +32,9 @@ desktop/build/
 # Server logs
 *.log
 
+# Scratch de los scripts de diagnóstico de tools/diagnostico/
+.tmp-e2e/
+
 # Docker
 dockerpaid.png
 railway.png

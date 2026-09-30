@@ -222,6 +222,36 @@ def restore_cookies_from_env() -> bool:
 engine = DownloadEngine()
 
 
+# ═══════════════════════════════════════════════════════════════
+# Lectura con reloj del primer byte
+# ────────────────────────────────────────────────────────────────
+# `pipe.stdout.read(8192)` a pelo es un BLOQUEO INDEFINIDO: no devuelve
+# nunca ni un byte ni un error si el otro extremo se cuelga sin cerrar. Con
+# eso, un yt-dlp o un ffmpeg que se quedan colgados dejan el request abierto
+# para siempre, sin una línea de log y sin que Railway pueda ni cortarlo.
+#
+# Estas cuatro rutas arrancan dos procesos y esperan su primer bloque, así que
+# todas necesitan reloj. El valor sale medido el 2026-09-30 sobre 8 proxies
+# SOCKS5 que sí funcionan: min 11,7 s, mediana 13,6 s, max 29,6 s. Con el
+# tope anterior de 12 s, 7 de 8 morían antes de dar su primer byte.
+def _read_first_byte(stream, timeout_s: float) -> bytes | None:
+    """Primer bloque del pipe, o None si no llega nada en `timeout_s`."""
+    try:
+        import select as _select
+        ready, _, _ = _select.select([stream], [], [], timeout_s)
+        if not ready:
+            return None
+    except Exception:
+        # select no disponible (o el objeto no es un fd real): mejor el
+        # comportamiento viejo de bloquear que dejar de servir.
+        pass
+    return stream.read(8192)
+
+
+def _first_byte_timeout_s() -> float:
+    return float(os.environ.get("PROXY_FIRST_BYTE_TIMEOUT", "30"))
+
+
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -494,6 +524,26 @@ class APIHandler(BaseHTTPRequestHandler):
         # distintos y no pueden compartir la entrada de caché.
         suffix = f"_q{quality}" if quality else ""
         return os.path.join(self.DOWNLOAD_CACHE_DIR, f"{safe_id}{suffix}{ext}")
+
+    def _video_workdir(self, prefix: str) -> str:
+        """Directorio de trabajo de una descarga de vídeo, junto a la caché.
+
+        NO se usa `tempfile.mkdtemp()` a pelo, que cae en /tmp. Dos motivos,
+        y el segundo es el que duele:
+
+        1. Al final se hace `os.replace(merged, download_path)`, y `os.replace`
+           solo es atómico **dentro del mismo sistema de ficheros**. Con el
+           workdir en /tmp y la caché en otro sitio, el rename falla con
+           `[Errno 18] Invalid cross-device link`. Cazar eso el 2026-09-30
+           costó un 1080p ya descargado y mergeado entero: la descarga se
+           hizo bien y se tiró en el último paso.
+        2. Un vídeo de 1080p son 50 MB en /tmp. En un contenedor de plan
+           gratuito /tmp es tmpfs, o sea RAM: cada descarga de vídeo se
+           estaba comiendo memoria en vez de disco.
+        """
+        os.makedirs(self.DOWNLOAD_CACHE_DIR, exist_ok=True)
+        return tempfile.mkdtemp(prefix=prefix,
+                                dir=self.DOWNLOAD_CACHE_DIR)
 
     @staticmethod
     def _video_dimensions(path: str) -> tuple[int, int] | None:
@@ -856,7 +906,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 logger.info(f"Deadline de clients directos alcanzado para vídeo "
                             f"{video_id}, pasando a proxy")
                 break
-            workdir = tempfile.mkdtemp(prefix="mp3vid_")
+            workdir = self._video_workdir("mp3vid_")
             try:
                 cmd = _base_cmd(client) + [
                     "--newline",
@@ -940,7 +990,7 @@ class APIHandler(BaseHTTPRequestHandler):
             proxy = _find_working_proxy(video_id, blocked=blocked)
             if not proxy:
                 break
-            workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
+            workdir = self._video_workdir("mp3vid_px_")
             got_short = False
             # Reloj del INTENTO completo (los 3 clients contra este proxy).
             # Antes cada client podía comerse los VIDEO_DOWNLOAD_TIMEOUT
@@ -1155,12 +1205,13 @@ class APIHandler(BaseHTTPRequestHandler):
                 p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
                 p1.stdout.close()
 
-                first = p2.stdout.read(8192)
+                first = _read_first_byte(p2.stdout, _first_byte_timeout_s())
                 if not first:
                     stderr = b""
                     if p1.stderr: stderr += (p1.stderr.read() or b"")
                     if p2.stderr: stderr += (p2.stderr.read() or b"")
-                    last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
+                    last_err = (stderr.decode(errors="replace")[:300]
+                                or f"sin audio en {_first_byte_timeout_s():.0f}s")
                     record_failure(client)
                     logger.warning(f"Download falló (client {client}): {last_err}")
                     try: p1.terminate(); p2.terminate()
@@ -1260,7 +1311,21 @@ class APIHandler(BaseHTTPRequestHandler):
         # Así el reintento no vuelve a probar el mismo proxy fallido.
         _blocked_proxies: set = set()
         max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
+        # Reloj de toda la fase de proxy. Cada intento puede costar hasta
+        # PROXY_SEARCH_BUDGET_S de búsqueda más PROXY_FIRST_BYTE_TIMEOUT de
+        # espera, así que 3 intentos son hasta 4,5 min: más que el corte de
+        # 5 min de Railway, que se llevaría la respuesta por el camino y
+        # dejaría al usuario sin saber qué pasó. Con este tope, un request que
+        # no va a salir devuelve 502 antes de que lo corten por fuera, y uno
+        # que sí sale no se ve afectado porque para entonces ya ha servido.
+        proxy_phase_deadline = time.monotonic() + float(
+            os.environ.get("PROXY_PHASE_BUDGET_S", "180"))
         for _attempt in range(max_proxy_attempts):
+            if time.monotonic() > proxy_phase_deadline:
+                logger.warning(
+                    f"Presupuesto de la fase de proxy agotado para {video_id} "
+                    f"tras {_attempt} intento(s)")
+                break
             proxy = _find_working_proxy(video_id, blocked=_blocked_proxies)
             if not proxy:
                 logger.warning(f"Proxy falló para {video_id} (no se encontró proxy), "
@@ -1314,41 +1379,37 @@ class APIHandler(BaseHTTPRequestHandler):
             # colgarse al descargar, y bloquear aqui gastaria decenas de
             # segundos por intento.
             #
-            # Bajado de 35s a 12s: un proxy sano entrega el primer bloque de
-            # audio en 1-3s (es lo que se midió en el get-url que lo
-            # seleccionó). 12s es margen de sobra para el arranque de yt-dlp
-            # más el PO token; más allá de eso el proxy está muerto y cada
-            # segundo extra se paga con los otros intentos de la cadena.
-            first_byte_timeout = float(
-                os.environ.get("PROXY_FIRST_BYTE_TIMEOUT", "12"))
-            try:
-                import select as _select
-                _ready, _, _ = _select.select([p2.stdout], [], [], first_byte_timeout)
-                if not _ready:
-                    logger.warning(
-                        f"Proxy download timeout (sin audio en {first_byte_timeout:.0f}s) "
-                        f"para {video_id}")
-                    try: p1.terminate()
-                    except Exception: pass
-                    try: p2.terminate()
-                    except Exception: pass
-                    return False
-            except Exception:
-                pass
-
-            first = p2.stdout.read(8192)
+            # SUBIDO de 12 s a 30 s, y la suposición anterior era falsa. Aquí
+            # estaba escrito «un proxy sano entrega el primer bloque de audio
+            # en 1-3s», y no: ese 1-3 s era el `--get-url` del SONDEO, que no
+            # descarga nada. La descarga tiene que volver a extraer los
+            # formatos y además bajar el primer bloque, y por un SOCKS5
+            # gratuito eso son más segundos.
+            #
+            # Medido el 2026-09-30 con 8 proxies que SÍ funcionan, de los
+            # que devuelve el sondeo concurrente:
+            #
+            #   primer byte: min 11,7 s · mediana 13,6 s · max 29,6 s
+            #   por encima de 12 s: 7 de 8
+            #
+            # O sea que el tope de 12 s mataba a casi todos los proxies
+            # buenos, y el síntoma era exactamente el 502 que se lleva días
+            # buscando: «Proxy download timeout (sin audio en 12s)» seguido de
+            # Invidious, que también está muerto. 30 s deja pasar el máximo
+            # medido y sigue poniendo un techo al intento.
+            first_byte_timeout = _first_byte_timeout_s()
+            first = _read_first_byte(p2.stdout, first_byte_timeout)
             if not first:
-                stderr = b""
-                if p1.stderr: stderr += (p1.stderr.read() or b"")
-                if p2.stderr: stderr += (p2.stderr.read() or b"")
-                logger.warning(f"Proxy download falló: {stderr.decode(errors='replace')[:200]}")
+                logger.warning(
+                    f"Proxy download timeout (sin audio en {first_byte_timeout:.0f}s) "
+                    f"para {video_id}")
                 try: p1.terminate()
                 except Exception: pass
                 try: p2.terminate()
                 except Exception: pass
-                # NO escribimos 502 aqui: si el fallo es temprano (no hubo
-                # audio), devolvemos False para que el llamador reintente con
-                # otro proxy. Solo al agotar los intentos se reporta error.
+                # NO escribimos 502 aqui: devolvemos False para que el
+                # llamador reintente con otro proxy. Solo al agotar los
+                # intentos se reporta error al cliente.
                 return False
 
             self.protocol_version = "HTTP/1.1"
@@ -1674,15 +1735,17 @@ class APIHandler(BaseHTTPRequestHandler):
                 p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
                 p1.stdout.close()
 
-                # Leer primer chunk para validar que hay audio
-                first = p2.stdout.read(8192)
+                # Leer primer chunk para validar que hay audio, CON RELOJ: a
+                # pelo era un bloqueo indefinido si el proceso se colgaba.
+                first = _read_first_byte(p2.stdout, _first_byte_timeout_s())
                 if not first:
                     stderr = b""
                     if p1.stderr:
                         stderr += (p1.stderr.read() or b"")
                     if p2.stderr:
                         stderr += (p2.stderr.read() or b"")
-                    last_err = stderr.decode(errors="replace")[:300] or "no se produjo audio"
+                    last_err = (stderr.decode(errors="replace")[:300]
+                                or f"sin audio en {_first_byte_timeout_s():.0f}s")
                     record_failure(client)
                     logger.warning(f"Preview falló (client {client}): {last_err}")
                     try:
@@ -1828,7 +1891,31 @@ class APIHandler(BaseHTTPRequestHandler):
             p2 = _sp.Popen(ffmpeg_cmd, stdin=p1.stdout, stdout=_sp.PIPE, stderr=_sp.PIPE)
             p1.stdout.close()
 
-            first = p2.stdout.read(8192)
+            # El primer byte se espera CON RELOJ. Aquí había un
+            # `p2.stdout.read(8192)` a pelo, que es un bloqueo indefinido: un
+            # proxy que resuelve `--get-url` y luego se cuelga al descargar
+            # dejaba este request colgado para siempre, sin log y sin
+            # respuesta, y el preview es justo lo que la app llama al abrir
+            # una canción. El mismo techo que usa la descarga (30 s, medido
+            # contra los 8 proxies que sí funcionan) va aquí también.
+            preview_first_byte = _first_byte_timeout_s()
+            first = _read_first_byte(p2.stdout, preview_first_byte)
+            if not first:
+                logger.warning(
+                    f"Proxy preview sin audio en {preview_first_byte:.0f}s "
+                    f"para {video_id}")
+                try: p1.terminate()
+                except Exception: pass
+                try: p2.terminate()
+                except Exception: pass
+                try:
+                    self._json(504, {
+                        "error": "El proxy no entregó el audio a tiempo",
+                        "videoId": video_id,
+                    })
+                except Exception:
+                    pass
+                return
             if not first:
                 stderr = b""
                 if p1.stderr: stderr += (p1.stderr.read() or b"")

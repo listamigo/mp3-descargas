@@ -35,9 +35,21 @@ Y luego el sondeo de calidad, que es el que de verdad dice si el host puede:
 curl -s --max-time 45 "https://mp3downloader-server-production.up.railway.app/api/ready?videoId=<ID>&quality=1080"
 ```
 
-- `ok:true` con `estimatedBytes` **≈ 6-7 MB** → el host ve la escalera alta. Si aun así descarga 360p, el bug es tuyo, vuelve a §A.2.
-- `ok:true` con `estimatedBytes` **≈ 4,4 MB** → el host **solo ve 360p**. No es un bug: es A.3.
+- `ok:true` y el **mismo `estimatedBytes` para 240, 480, 720 y 1080** → el host
+  **NO ve la escalera alta**: la extracción solo encuentra un formato, y la
+  "estimación de 1080p" es en realidad el 360p con la etiqueta equivocada. No es
+  un bug, es §A.3. Medido el 2026-09-29: 12.107.463 bytes, byte a byte igual,
+  para las cinco calidades.
+- `ok:true` y **el número SÍ cambia con la calidad** → el host ve la escalera
+  alta. Referencia: `cUpOtbCWSRs` son 15.214.000 B a 480p, 23,58 MiB a 720p y
+  44,44 MiB a 1080p. Si sale mucho menos que eso, es 360p con otra etiqueta.
 - `ok:false` → el host no extrae nada por la vía directa. Normal en datacenter, sigue a §A.3.
+
+> Lo que hay que mirar es la **diferencia entre calidades**, nunca el valor
+> absoluto. La versión anterior de esta tabla decía «≈ 6-7 MB = escalera alta,
+> ≈ 4,4 MB = solo 360p», y era **falso**: con una sola calidad disponible la
+> estimación salía idéntica siempre, así que el número que se miraba no
+> significaba lo que parecía.
 
 > `79ikolMBiRk` da 480p como máximo aunque todo funcione: es el techo de ESE
 > vídeo, no un fallo. Para canarios usa IDs sacados de `/api/search`.
@@ -93,38 +105,71 @@ de 1080p sube mucho, porque ya no se gasta el presupuesto en proxies muertos.
 
 ### A.3 "El host solo ve 360p" — el techo de verdad
 
-Esto **no es un bug** y no se arregla con código. Es lo que mide §A.0.
+> ⚠️ **Sección REESCRITA el 2026-09-30.** La versión anterior afirmaba que esto
+> «no es un bug y no se arregla con código», y recomendaba subir
+> `MAX_PROXY_ATTEMPTS` a 4-5. **Las dos cosas eran falsas**, y están medidas:
+> el 18 % de acierto del sondeo era la causa, no la lotería.
 
-Por qué: sin proxy residencial, la extracción por IP de datacenter llega hasta
-donde le deja el PO token. Y el PO token, cuando lo hay, **no** da formato
-alto: da acceso a la escalera, pero el formato alto en muchas ladders exige
-además que la IP no esté marcada.
-
-Medido el 2026-09-27 (esto es lo que hay que saber, no lo que se sospechaba):
+Lo que pasa de verdad, medido el 2026-09-29:
 
 | Vía | Qué consigue |
 |---|---|
-| Directa en datacenter, con PO script | Solo el muxed de 360p. `/api/ready` lo confirma: 4,4 MB para cualquier calidad |
+| Directa en datacenter | Solo el muxed de 360p. `/api/ready` lo confirma: **el mismo `estimatedBytes` para 240/360/480/720/1080**, byte a byte |
 | Directa desde IP residencial (tu PC) | 1080p y 720p sin problema, en 8-10 s |
-| **Por SOCKS5 gratuito** | **La escalera alta SÍ aparece**: `yt-dlp -F` lista 1080p (itag 137) y 720p (itag 136) |
-| Por SOCKS5, **al descargar** | Sale 1080p ~1 de cada 3 veces. Las otras dos, 360p |
+| **Por SOCKS5 gratuito** | **1080p (itag 137) y 720p (itag 136), siempre** — medido bajando el 137 de verdad |
+| Por SOCKS5, con `player_client=mweb` y sin PO token | Lo mismo. El PO token no hace falta |
 
-Lo último es la clave y explica todo lo que se ha visto: **la escalera alta está
-disponible pero la extracción la degrada de forma intermitente**, y no depende
-del proxy (el mismo proxy dio 360p, 360p y 1080p en tres descargas seguidas).
-El selector de formatos acaba en `/b[height<=q]/b`, así que cuando la pista alta
-no se puede coger devuelve el 360p **sin decir nada**.
+**No es lotería.** Lo que se veía como «sale 1080p 1 de cada 3 veces» era otra
+cosa: el sondeo de proxies era **en serie**, así que de 60 candidatos solo
+llegaban a probarse ~5 antes de que se acabara el presupuesto de 60 s (cada
+sondeo puede costar 12 s). Con una tasa de uso real del 4 %, eso da
+P(encontrar uno) ≈ **18 %**. Es decir: la vía directa a 360p ganaba casi
+siempre **porque el proxy casi nunca llegaba a probarse**, no porque el proxy no
+sirviera. Los que sí llegaban a probarse funcionaban.
 
-**Solución rápida y honesta:** para no gastar tiempo, fija `MAX_PROXY_ATTEMPTS`
-a 4-5 en el panel de Railway (sin desplegar). Cada intento es una tirada
-independiente de la lotería, y con 4-5 la probabilidad de alguno salga 1080p
-sube de ~70 % a ~87 %. Y acepta 360p como resultado válido: la app ya lo
-etiqueta con la altura real, así que el usuario ve "MP4 360p" y no una
-mentira.
+Medido el 2026-09-30 con el sondeo concurrente (`PROXY_TCP_WORKERS=24`,
+`PROXY_PROBE_WORKERS=12`, `FREE_PROXY_CANDIDATES=200`), vía directa cerrada a
+propósito — o sea, la situación real de Railway:
 
-**Solución de verdad:** proxy residencial (`RESIDENTIAL_PROXY` en el entorno del
-servidor). Es lo único que quita el 403 directo, da 1080p estable y elimina
-la lotería. Es la decisión pendiente de §5.6 y no la ha tomado nadie.
+```
+Proxy activo para cUpOtbCWSRs: socks5://212.77.75.25:1088 (35 probados en 29.8s)
+*** SERVIDO cUpOtbCWSRs_q1080.mp4  height=1080  size=51407900
+ffprobe: h264,1920,1080
+=== listo en 110.3s
+```
+
+1080p de verdad, por SOCKS5 gratuito, con la escalera alta entera.
+
+**Lo que NO hay que hacer, y por qué:**
+
+- ❌ **Subir `MAX_PROXY_ATTEMPTS` a 4-5.** Con la búsqueda en serie, más intentos
+  **no encuentran más proxies**: cada intento paga su propia búsqueda y el reloj
+  corta antes. No ataca la causa, solo multiplica la espera. Ya no hace falta
+  porque la búsqueda es concurrente.
+- ❌ **Arreglar el PO token provider.** Aunque funcionase, el PO token no abre
+  la escalera: la estimación de `/api/ready` lo usa y sigue viendo un único
+  formato. Alto esfuerzo, resultado incierto. (`po_script_ok` en `/api/health`
+  solo hace `os.path.isfile` sobre `generate_once.js`: **nunca lo ejecuta**, así
+  que ese campo da falsa confianza y no prueba nada.)
+- ❌ **Proxy residencial de pago.** El usuario pidió gratis, y está medido que
+  no hace falta: los SOCKS5 gratuitos dan 1080p.
+- ❌ **Tocar la app.** La app ya pide `?mode=video&quality=` y lee
+  `X-Video-Height` bien. El fallo era 100 % servidor.
+
+**Reglas de ajuste (panel de Railway, sin desplegar):**
+
+```
+FREE_PROXY_CANDIDATES=200   # por defecto. Antes 60, y era lo que recortaba la búsqueda
+PROXY_PROBE_WORKERS=12      # hilos de yt-dlp en el sondeo
+PROXY_TCP_WORKERS=24        # hilos del filtro TCP
+PROXY_PROBE_TIMEOUT=12      # un proxy sano tarda 7,6-9,7 s en --get-url
+PROXY_SEARCH_BUDGET_S=60    # techo de reloj de la búsqueda
+VIDEO_PER_CLIENT_TIMEOUT=90 # antes cada client se podía comer 420 s
+```
+
+**Y acepta 360p como resultado válido cuando no queda otra cosa**: la app lo
+etiqueta con la altura real, así que el usuario ve «MP4 360p» y no una mentira.
+Lo que ya no vale es que el 360p sea lo que sale SIEMPRE.
 
 ### A.4 El fallo que costó más y era invisible: el sondeo de proxy
 
@@ -142,12 +187,20 @@ pasar, se adjusta **desde el panel de Railway, sin desplegar**:
 ```
 PROXY_PROBE_TIMEOUT=15     # si los proxies tardan más
 PROXY_SEARCH_BUDGET_S=90   # si la lista de GeoNode está llena de muertos
-FREE_PROXY_CANDIDATES=60   # por defecto
+FREE_PROXY_CANDIDATES=200  # por defecto (era 60 y era lo que recortaba la búsqueda)
+PROXY_PROBE_WORKERS=12     # hilos de yt-dlp en el sondeo (por defecto)
+PROXY_TCP_WORKERS=24       # hilos del filtro TCP (por defecto)
 ```
 
-Medido también: de ~50-100 candidatos de GeoNode, **solo 1-3 pasan el filtro
-TCP y resuelven**. Es una lista terrible y va a fallar a menudo. No es un bug
-tuyo, es la materia prima.
+Medido también: de ~100 candidatos de GeoNode, **1 de cada 5 pasa el filtro
+TCP**, y de los que pasan, ~1 de cada 25 resuelve el vídeo. Es una lista
+terrible y va a fallar a menudo. No es un bug tuyo, es la materia prima.
+
+**Y el sondeo es concurrente desde el 2026-09-30.** Antes iba en serie: de 60
+candidatos solo llegaban a probarse ~5 en el presupuesto de 60 s, así que el
+18 % de acierto que salía no era culpa de los proxies sino de no llegar a
+probarlos. Con 200 candidatos en paralelo, 200 pasan el filtro TCP en 6,9 s y
+un proxy que sirve 1080p aparece en el segundo grande. Ver §A.3.
 
 ### A.5 Si las descargas tardan minutos o Railway corta la conexión
 
@@ -1082,9 +1135,20 @@ lista completa (7 clients)   ->  1920x1080, 1280x720, 854x480, 640x360, 426x240,
 ```
 
 Conclusión: **`android` a secas es el único client que sobrevive sin token, y solo
-da 360p.** Por eso el 1080p nunca sale de esta infraestructura: no es un bug del
-selector, es que el formato alto no se puede pedir. Solo un PO token válido (IP no
-marcada) o un proxy residencial lo cambian.
+da 360p.**
+
+> ⚠️ **Corrección del 2026-09-29.** La frase que seguía aquí —«por eso el 1080p
+> nunca sale de esta infraestructura: no es un bug del selector, es que el
+> formato alto no se puede pedir»— **es falsa**, y arrastró varias sesiones
+> perdidas. El formato alto **sí** se puede pedir sin token: con
+> `player_client=mweb` y **sin PO token**, por SOCKS5 gratuito, se baja el itag
+> 137 de 1920x1080 sin problema. Lo que no se puede es en la **vía directa**,
+> que es un problema de IP, no de token. El PO token nunca fue la solución del
+> techo de 360p.
+>
+> Y `po_script_ok` en `/api/health` **no prueba que el PO token funcione**: solo
+> hace `os.path.isfile` sobre `generate_once.js`. Nunca lo ejecuta. Es un campo
+> que da falsa confianza.
 
 De ahí la escalera que hay ahora en el vídeo: se pide la lista completa y, si el
 fallo es de token o cookies, se reintenta con `android` en el mismo proxy. El
