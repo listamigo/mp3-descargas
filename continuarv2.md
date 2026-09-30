@@ -337,7 +337,7 @@ porque la caché de 48 h falsea todo lo que se repita (ver §1).
 
 ---
 
-## 9. Lo que se arregló el 2026-09-30 — commits `3c1e8c5` y `2ed9fc2`
+## 9. Lo que se arregló el 2026-09-30 — commits `3c1e8c5`, `2ed9fc2`, `e14322c`
 
 Cuatro arreglos, todos sobre la misma raíz: **el servidor nunca encontraba un
 proxy que sirviera, y cuando no lo encontraba no quedaba ninguna vía.** Solo
@@ -453,7 +453,32 @@ El workdir se crea ahora junto a la caché (`_video_workdir()`), lo que además
 saca 50 MB de vídeo de `/tmp`, que en un contenedor de plan gratuito es tmpfs,
 o sea RAM.
 
-### 9.8 Cómo volver a verificar (todo esto es local, sin Railway)
+### 9.8 El cuelgue de 200 s: la causa era otra (`e14322c`)
+
+Antes se resolvió el cuelgue de §2.7 poniendo un tope de pared de 90 s por
+client. **Eso era un parche, y además salía caro**: 51 MB por un SOCKS5
+gratuito puede tardar 3-5 min, así que el tope cortaba descargas de 1080p
+legítimas a mitad y el 1080p no llegaba.
+
+La causa de verdad: **`_proxy_cmd_video` no llevaba `--socket-timeout` ni
+`--retries`**. Las otras tres rutas de descarga sí los llevaban. Un SOCKS5 que
+acepta la conexión y luego deja de mandar datos deja a yt-dlp esperando
+**indefinidamente**, y como el cliente no ve ni un byte hasta tener el MP4
+entero, el request entero parecía congelado. Eso son los 200 s a 0 % sin una
+línea de log.
+
+La distinción que importa, y que estaba al revés:
+
+| | Mide | Para qué |
+|---|---|---|
+| `--socket-timeout 20` | **inactividad** | Corta lo que se cuelga de verdad, sin castigar una descarga lenta pero viva |
+| `VIDEO_PER_CLIENT_TIMEOUT` | duración total | Cinturón por encima, holgado: **300 s** |
+
+Regla para no repetirlo: **el tope de pared no es el anti-colgado**. Con
+`--socket-timeout` puesto, un tope de pared corto solo sirve para cortar
+descargas sanas.
+
+### 9.9 Cómo volver a verificar (todo esto es local, sin Railway)
 
 ```bash
 cd "/home/elimdavid/mp3 downloader"
@@ -474,9 +499,39 @@ Los tres están en `tools/diagnostico/`, junto a los que ya había
 contra la lógica real del servidor, no contra una simulación, y escriben en
 `.tmp-e2e/` (ignorado por git).
 
-**Ojo con el tiempo:** cada MP3 por proxy paga su propia búsqueda (hasta 60 s),
-así que una tanda de 10 tarda del orden de 10-15 min. Un vídeo que falla se
-come hasta `PROXY_PHASE_BUDGET_S` (180 s) y no avanza al siguiente.
+**Ojo con el tiempo:** cada descarga por proxy paga su propia búsqueda (hasta
+60 s) y luego la descarga, así que una tanda de 10 tarda del orden de 10-15 min.
+Un vídeo que falla se come hasta `PROXY_PHASE_BUDGET_S` (180 s) y no avanza al
+siguiente. No es un cuelgue del servidor: es el precio de los proxies gratuitos,
+y por eso hay que dejar correr la tanda en segundo plano en vez de mirarla.
+
+### 9.10 Qué quedó VERIFICADO y qué no, con honestidad
+
+**Verificado hoy, de extremo a extremo, con la vía directa cerrada a propósito
+(la condición exacta de Railway):**
+
+| Prueba | Resultado |
+|---|---|
+| 1080p por PROXY (`e2e_video_proxy.py cUpOtbCWSRs 1080`) | ✅ **h264 1920x1080**, 51.407.900 B, 110,3 s |
+| 1080p por la vía directa (`e2e_video_directo.py`) | ✅ h264 1920x1080, 51.407.900 B, 15,7 s y 21,6 s |
+| Búsqueda de proxy en serie vs. concurrente | ✅ 60 cand. → 0 aciertos / 200 cand. → acierto en el 2.º grande |
+| Latencia de primer byte por SOCKS5 | ✅ 8 proxies: min 11,7 s · mediana 13,6 s · max 29,6 s |
+| `_invidious_request` con cuerpo no-JSON | ✅ devuelve `None`, no el texto |
+| Recorrido de Invidious → cooldown | ✅ 2.ª llamada instantánea |
+| EXDEV entre workdir y caché | ✅ arreglado, la ruta que fallaba ahora sirve |
+| Sondeo concurrente con stubs (60→200 cand., sin red) | ✅ encuentra proxy tardío, respeta presupuesto, no cuelga |
+
+**NO verificado, y hay que decirlo claro:**
+
+- **En Railway.** Todo lo de arriba es local. La IP de Railway es otra y el
+  primer `curl` de §8 tiene que confirmar que allí también sale 1080p.
+- **Una tanda larga de MP3.** Se llegaron a bajar 3 de 10 en paralelo a la
+  corrección del primer byte, y `3BFTio5296w` pasó de fallar a salir. No se
+  tiene una cifra de 20 seguidas, que era la verificación que pedía la fase 2.
+  El plan pedía «20 MP3 seguidos, 0× 502» y **esa cifra no está**: falta por
+  medir, y es lo primero que hay que hacer al desplegar.
+- **El streaming progresivo y el capping por velocidad**: no implementados, a
+  propósito. Ver §10.
 
 Trampa al medir, la misma de §1: **usa vídeos nunca descargados**, o la caché de
 48 h te sirve la segunda petición desde disco y todo lo que repitas no es una

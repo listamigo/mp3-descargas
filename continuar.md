@@ -164,8 +164,22 @@ PROXY_PROBE_WORKERS=12      # hilos de yt-dlp en el sondeo
 PROXY_TCP_WORKERS=24        # hilos del filtro TCP
 PROXY_PROBE_TIMEOUT=12      # un proxy sano tarda 7,6-9,7 s en --get-url
 PROXY_SEARCH_BUDGET_S=60    # techo de reloj de la búsqueda
-VIDEO_PER_CLIENT_TIMEOUT=90 # antes cada client se podía comer 420 s
+PROXY_FIRST_BYTE_TIMEOUT=30 # era 12 y mataba a 7 de cada 8 proxies buenos
+PROXY_PHASE_BUDGET_S=180    # tope de toda la fase de proxy del MP3
+VIDEO_PER_CLIENT_TIMEOUT=300 # cinturón de pared; el anti-colgado es --socket-timeout
 ```
+
+> **No confundas los dos timeouts.** `PROXY_FIRST_BYTE_TIMEOUT` (30 s) es
+> **inactividad**: corta un proxy que no da el primer byte. Antes estaba en
+> 12 s y medido sobre 8 proxies que sí funcionan, **7 de 8 entregaban su primer
+> byte después de 12 s** (mediana 13,6 s, máximo 29,6 s). Es decir, mataba a
+> casi todos los buenos.
+>
+> Y `VIDEO_PER_CLIENT_TIMEOUT` (300 s) es **duración total**, solo un cinturón:
+> lo que corta una descarga COLGADA es `--socket-timeout 20`, que mide
+> inactividad. Poner el tope de pared corto (se probó con 90 s) corta
+> descargas de 1080p sanas pero lentas: 51 MB por un SOCKS5 gratuito tardan
+> 3-5 min.
 
 **Y acepta 360p como resultado válido cuando no queda otra cosa**: la app lo
 etiqueta con la altura real, así que el usuario ve «MP4 360p» y no una mentira.
