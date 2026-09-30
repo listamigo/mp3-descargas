@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -49,8 +50,26 @@ INVIDIOUS_PROBE_INSTANCES = int(os.environ.get("INVIDIOUS_PROBE_INSTANCES", "3")
 INVIDIOUS_PROBE_TIMEOUT = int(os.environ.get("INVIDIOUS_PROBE_TIMEOUT", "3"))
 INVIDIOUS_VIDEO_TIMEOUT = int(os.environ.get("INVIDIOUS_VIDEO_TIMEOUT", "10"))
 
+#-bodied que devuelve una instancia apagada. Medido el 2026-09-29:
+# `invidious.projectsegfau.lt` responde HTTP 200 con este texto en el cuerpo.
+# Un 200 con cuerpo de texto NO es una instancia viva, y sin reconocerlo se
+# cacheaba como tal.
+_INVIDIOUS_DEAD_BANNER = "invidious has shutdown"
+
 _invidious_active = None  # instance that worked last
 _invidious_lock = threading.Lock()
+
+# Invidious es el ÚLTIMO recurso de la cadena y, medido el 2026-09-29, está
+# muerto: las instancias responden HTTP 200 con un texto de apagado, no con
+# JSON. Recorrer las 9 a INVIDIOUS_VIDEO_TIMEOUT (10 s) son 90 s de espera
+# para acabar devolviendo None, y ese None es el 502 que ve el usuario.
+#
+# No se borra el recurso (si una instancia vuelve, tiene que servir), pero sí
+# se deja de pagar su búsqueda a cada descarga: una vez recorridos todos los
+# candidatos sin que ninguno sirva, se marca el host como muerto durante este
+# tiempo y las siguientes descargas devuelven None al instante.
+INVIDIOUS_DEAD_COOLDOWN_S = int(os.environ.get("INVIDIOUS_DEAD_COOLDOWN_S", "1800"))
+_invidious_dead_until = 0.0
 
 # ═══════════════════════════════════════════════════════════════
 # User-Agent rotation — YouTube bloquea UAs estáticos de bots
@@ -354,6 +373,16 @@ _HARD_BAN_HINTS = (
 DIRECT_PATH_MIN_FAILURES = int(os.environ.get("DIRECT_PATH_MIN_FAILURES", "1"))
 DIRECT_PATH_DISABLED_S = int(os.environ.get("DIRECT_PATH_DISABLED_S", "300"))
 
+# Motivo con el que se anota el `last_err` cuando la vía directa se SALTARÁ
+# por estar en cooldown. Sin él, quien decide el mensaje del 502 recibía un
+# error vacío y no podía distinguir "YouTube bloquea esta IP" de "este vídeo
+# no existe": el texto tiene que pasar el filtro de `is_bot_challenge` para
+# que la respuesta diga la verdad en vez de culpar al último recurso.
+DIRECT_PATH_COOLDOWN_REASON = (
+    "Sign in to confirm you're not a bot: la vía directa está en cooldown, "
+    "YouTube bloquea esta IP de datacenter"
+)
+
 _direct_lock = threading.Lock()
 _direct_failures = 0
 _direct_disabled_until = 0.0
@@ -491,14 +520,22 @@ _free_proxy_lock = threading.Lock()
 # la ÚNICA vía que deshace el 403 de la CDN de YouTube en IP de datacenter, un
 # tope de 20 sonaba a "no hay proxy" cuando lo que había era "no hemos
 # mirado los siguientes". Ahora se piden 100 por página hasta 3 páginas y se
-# prueban 60.
+# prueban 200.
 #
 # El coste no es gratis: los candidatos que no aceptan conexión mueren en el
 # sondeo TCP (TCP_PROBE_TIMEOUT, 1,5 s) y los que sí, en PROXY_PROBE_TIMEOUT
 # (6 s). Por eso el bucle para por reloj y no solo por número, con
 # PROXY_SEARCH_BUDGET_S, y no nos pasamos de la cuenta esperando por un proxy
 # que quizá no exista.
-FREE_PROXY_CANDIDATES = int(os.environ.get("FREE_PROXY_CANDIDATES", "60"))
+# Cuántos candidatos entran en el SONDEO. Subido de 60 a 200 el 2026-09-29,
+# y no por capricho: con el sondeo concurrente, 200 candidatos se filtran por
+# TCP en ~7 s (24 hilos) y de los que quedan vivos se sondean 12 a la vez, así
+# que el número dejó de ser lo que recortaba la búsqueda. Medido ese mismo
+# día desde esta máquina: con el tope de 60 solo pasaban 15 el filtro TCP y
+# ninguno sirvió (0 aciertos en 20 s); con 200 pasaron 43 y el segundo
+# grandado que respondió ya bajaba 1080p — 32 sondeos en 30,7 s, dentro del
+# presupuesto. Lo que limitaba de verdad era la lista, no el reloj.
+FREE_PROXY_CANDIDATES = int(os.environ.get("FREE_PROXY_CANDIDATES", "200"))
 
 # Presupuesto de reloj para buscar un proxy, en segundos. Alcanza para
 # sondear del orden de 25-30 candidatos (los que no pasan el TCP son 1,5 s),
@@ -515,6 +552,23 @@ FREE_PROXY_PAGES = int(os.environ.get("FREE_PROXY_PAGES", "3"))
 # pero muchos aceptan el handshake y se cuelgan: sin este filtro cada uno
 # costaba los PROXY_PROBE_TIMEOUT completos.
 TCP_PROBE_TIMEOUT = float(os.environ.get("TCP_PROBE_TIMEOUT", "1.5"))
+
+# Hilos del SONDEO CONCURRENTE de proxies. El sondeo en serie era el bug que
+# mediado el 2026-09-29 dejaba el servidor casi siempre sin proxy (§2.3 de
+# continuarv2.md): de 60 candidatos ~19 pasaban el filtro TCP y cada uno
+# costaba hasta PROXY_PROBE_TIMEOUT (12 s), así que el presupuesto de 60 s
+# daba para ~5 sondeos y, con una tasa de uso real del 4 %, la probabilidad
+# de encontrar uno vivo era del 18 %. En serie el reloj manda; en paralelo
+# sobran candidatos y el reloj deja de ser el cuello de botella.
+#
+# TCP_PROBE_WORKERS solo hace aperturas de socket (barato, y hay muchos
+# candidatos por sondear). YTDLP_PROBE_WORKERS paga una invocación de yt-dlp
+# por candidato, que es un proceso completo: se mantiene bajo para no
+# deshidratar un contenedor de plan gratuito con 60 yt-dlp a la vez. El valor
+# 12 es el que usa tools/diagnostico/probe.py, con el que se encontraron 4
+# proxies que sirven de verdad sobre 97 que aceptan TCP.
+TCP_PROBE_WORKERS = int(os.environ.get("PROXY_TCP_WORKERS", "24"))
+YTDLP_PROBE_WORKERS = int(os.environ.get("PROXY_PROBE_WORKERS", "12"))
 
 # El proxy que funcionó, para no re-descubrirlo en cada request. Se guarda
 # en un fichero porque en un plan gratis el contenedor se reinicia o se
@@ -719,60 +773,40 @@ def _is_too_big_error(text: str) -> bool:
     return "max-filesize" in lowered or "larger than max-filesize" in lowered
 
 
+def _proxy_candidates(blocked: set | None = None) -> list[str]:
+    """Candidatos a sondear: los conocidos primero, luego los frescos.
+
+    Compartido por `_find_working_proxy` y `_try_with_proxy` para que las dos
+    rutas compongan la lista igual. Un proxy en `blocked` es uno cuya descarga
+    COMPLETA ya falló en esta petición, así que no se vuelve a probar.
+    """
+    blocked = blocked or set()
+    candidates: list[str] = []
+    for p in _load_working_proxies():
+        if p not in candidates and p not in blocked:
+            candidates.append(p)
+    for p in _fetch_free_proxies():
+        if p not in candidates and p not in blocked:
+            candidates.append(p)
+    return candidates[:FREE_PROXY_CANDIDATES]
+
+
 def _try_with_proxy(video_id: str) -> str | None:
     """Intenta obtener URL de audio vía proxies SOCKS5 gratuitos.
 
-    Prueba múltiples proxies con timeout corto para no bloquear.
-    YouTube bloquea IPs de datacenter (Render, Railway, etc.), así que
-    un proxy residencial o al menos uno que no esté en lista negra es
-    necesario para que las descargas funcionen.
+    YouTube bloquea IPs de datacenter (Render, Railway, etc.), así que un
+    proxy que no esté en lista negra es necesario para que las descargas
+    funcionen. El sondeo es el mismo concurrente que usa `_find_working_proxy`
+    (ver ahí por qué): en serie solo llegaba a probar ~5 candidatos antes de
+    que se acabara el presupuesto, y por eso casi siempre devolvía None.
     """
-    fresh = _fetch_free_proxies()
-    if not fresh:
+    candidates = _proxy_candidates()
+    if not candidates:
         return None
-
-    # Los proxies ya conocidos se prueban primero: si uno funcionó para otra
-    # descarga, es el candidato con más probabilidades.
-    candidates: list[str] = []
-    for p in _load_working_proxies():
-        if p not in candidates:
-            candidates.append(p)
-    for p in fresh:
-        if p not in candidates:
-            candidates.append(p)
-
-    url = f"https://youtube.com/watch?v={video_id}"
-    # Probar los primeros FREE_PROXY_CANDIDATES, descartando primero los
-    # que ni siquiera aceptan conexión (antes eran 8 proxies x 15s = 120s).
-    for proxy in candidates[:FREE_PROXY_CANDIDATES]:
-        if not _proxy_tcp_alive(proxy):
-            continue
-        try:
-            cmd = [
-                "yt-dlp", "--no-warnings",
-                "--proxy", proxy,
-                "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", _player_client_arg(ANDROID_CLIENT),
-                "-f", "bestaudio/best",
-                "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
-                "--retries", str(YTDLP_RETRIES),
-                "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
-                "--get-url", url,
-            ]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=PROXY_PROBE_TIMEOUT,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                logger.info(f"Audio URL via proxy {proxy} for {video_id}")
-                return result.stdout.strip().split("\n")[0].strip()
-        except subprocess.TimeoutExpired:
-            logger.debug(f"Proxy {proxy} timed out for {video_id}")
-            continue
-        except Exception as e:
-            logger.debug(f"Proxy {proxy} failed for {video_id}: {e}")
-            continue
-    return None
+    winner, winner_url, _, _ = _probe_candidates(video_id, candidates)
+    if winner:
+        logger.info(f"Audio URL via proxy {winner} for {video_id}")
+    return winner_url
 
 
 def _proxy_cmd(video_id: str, proxy: str, output_stdout: bool = True) -> list[str]:
@@ -876,6 +910,157 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
     ]
 
 
+def _proxy_probe_cmd(video_id: str, proxy: str) -> list[str]:
+    """Comando de validación de un proxy: extrae, sin descargar bytes."""
+    return [
+        "yt-dlp", "--no-warnings",
+        "--proxy", proxy,
+        "--user-agent", random.choice(USER_AGENTS),
+        "--extractor-args", _player_client_arg(ANDROID_CLIENT),
+        "-f", "bestaudio/best",
+        "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
+        "--retries", str(YTDLP_RETRIES),
+        "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
+        "--get-url", f"https://youtube.com/watch?v={video_id}",
+    ]
+
+
+def _probe_proxy(video_id: str, proxy: str) -> tuple[str, str] | None:
+    """Valida UN proxy con `--get-url`. Devuelve (proxy, url) o None.
+
+    Aislado en su propia función porque el sondeo es concurrente: cada
+    candidato es independiente y no puede soltar excepción hacia el hilo
+    llamante.
+    """
+    try:
+        result = subprocess.run(
+            _proxy_probe_cmd(video_id, proxy), capture_output=True, text=True,
+            timeout=PROXY_PROBE_TIMEOUT,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            media = result.stdout.strip().split("\n")[0].strip()
+            return proxy, media
+    except subprocess.TimeoutExpired:
+        # Antes caía en el `except Exception` de abajo y desaparecía sin dejar
+        # rastro, que es como un timeout de sondeo mal calibrado acaba
+        # pareciendo "no hay proxies" en el log.
+        logger.debug(f"Proxy {proxy} no respondió el --get-url en "
+                     f"{PROXY_PROBE_TIMEOUT:.0f}s, descartado")
+    except Exception as e:
+        logger.debug(f"Proxy {proxy} falló en el sondeo: {e}")
+    return None
+
+
+def _tcp_alive_many(proxies: list[str], deadline: float) -> list[str]:
+    """Filtro TCP concurrente. Devuelve los que aceptan, en el orden dado.
+
+    El orden se conserva a propósito: los candidatos se arman poniendo primero
+    los proxies que ya funcionaron, y en paralelo "el primero que responda"
+    deja de ser necesariamente el mejor. Filtrar es barato (una apertura de
+    socket cada uno) y son 60, así que se hacen todos de golpe en lugar de
+    dosificar el presupuesto de reloj.
+    """
+    if not proxies:
+        return []
+    alive: list[str] = []
+    with ThreadPoolExecutor(max_workers=TCP_PROBE_WORKERS) as pool:
+        futures = {pool.submit(_proxy_tcp_alive, p): p for p in proxies}
+        remaining = max(0.0, deadline - time.monotonic())
+        # `wait` con el presupuesto restante: si el reloj se agota, se
+        # devuelven los que ya hayan respondido y se dejan morir los demás
+        # con el pool (cada uno tiene su propio TCP_PROBE_TIMEOUT).
+        done, pending = wait(futures, timeout=remaining)
+        for fut in done:
+            try:
+                if fut.result():
+                    alive.append(futures[fut])
+            except Exception:
+                continue
+        if pending:
+            logger.debug(f"{len(pending)} candidatos sin verificar TCP al "
+                         f"agotarse el presupuesto de búsqueda")
+    return alive
+
+
+def _probe_candidates(
+    video_id: str, candidates: list[str], budget_s: float | None = None
+) -> tuple[str | None, str | None, int, bool]:
+    """Sondea candidatos en paralelo y devuelve el primero que responde.
+
+    Devuelve (proxy, media_url, probados, cortado_por_reloj). `media_url` solo
+    la usan las rutas que necesitan la URL de medios; la descarga usa el
+    proxy, porque YouTube firma la URL de googlevideo para la IP que la pidió.
+
+    El presupuesto `budget_s` es de reloj y manda sobre el número de
+    candidatos: es lo que impide que un request se quede esperando. Antes de
+    hacerlo concurrente era además el cuello de botella real, y por eso solo
+    llegaban a probarse ~5 de 60 candidatos; en paralelo deja de serlo, pero
+    sigue poniendo un techo para que un contenedor de plan gratuito no se
+    quede sondeando sin fin.
+    """
+    if not candidates:
+        return None, None, 0, False
+    budget = PROXY_SEARCH_BUDGET_S if budget_s is None else budget_s
+    started = time.monotonic()
+    # 1) Filtro TCP de todos los candidatos en paralelo: una apertura de
+    #    socket cada uno, coste ~1,5 s, pero en serie eran decenas de segundos
+    #    solo para descartar los que ni siquiera aceptan conexión.
+    alive = _tcp_alive_many(candidates, time.monotonic() + budget)
+    if not alive:
+        return None, None, 0, False
+
+    # 2) Los que pasan el filtro, por tandas de YTDLP_PROBE_WORKERS, con el
+    #    reloj por delante. La tanda se cierra en cuanto UNO responde: no
+    #    tiene sentido seguir pagando sondeos cuando ya hay proxy.
+    cut_by_clock = False
+    probed = 0
+    workers = max(1, min(YTDLP_PROBE_WORKERS, len(alive)))
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
+        queued: list = []
+        idx = 0
+        while idx < len(alive) or queued:
+            restante = budget - (time.monotonic() - started)
+            if restante <= 0:
+                cut_by_clock = True
+                break
+            while idx < len(alive) and len(queued) < workers:
+                queued.append(executor.submit(_probe_proxy, video_id, alive[idx]))
+                idx += 1
+            done, pending = wait(queued, timeout=restante,
+                             return_when=FIRST_COMPLETED)
+            if not done:
+                cut_by_clock = True
+                break
+            winner: tuple[str, str] | None = None
+            for fut in done:
+                if fut in pending:
+                    pending.remove(fut)
+                probed += 1
+                try:
+                    found = fut.result()
+                except Exception:
+                    found = None
+                if found and winner is None:
+                    winner = found
+            queued = list(pending)
+            if winner:
+                logger.info(
+                    f"Proxy activo para {video_id}: {winner[0]} "
+                    f"({probed} probados en {time.monotonic() - started:.1f}s)")
+                # NOTA: NO marcamos el proxy como "working" aqui. Que resuelva
+                # el --get-url no garantiza que la descarga COMPLETA funcione
+                # (la firma de googlevideo puede fallar al descargar). Solo
+                # quien confirma la descarga completa lo marca.
+                return winner[0], winner[1], probed, cut_by_clock
+    finally:
+        # Los sondeos en vuelo son procesos ya lanzados y no se pueden matar,
+        # pero `shutdown(wait=False)` no hace esperar al request mientras
+        # viajan. Cada uno muere solo con su PROXY_PROBE_TIMEOUT.
+        executor.shutdown(wait=False)
+    return None, None, probed, cut_by_clock
+
+
 def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None:
     """Encuentra un proxy que pueda resolver el video (validación rápida).
 
@@ -887,81 +1072,24 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
     descarga completa en esta petición), para no re-probarlos.
     La descarga posterior (`_proxy_cmd`) usará ese MISMO proxy para que la
     firma de la URL coincida con la IP de descarga.
-    """
-    blocked = blocked or set()
-    fresh = _fetch_free_proxies()
-    known = _load_working_proxies()
-    # Probar primeros los ya conocidos, luego el resto de la lista fresca.
-    candidates: list[str] = []
-    for p in known:
-        if p not in candidates and p not in blocked:
-            candidates.append(p)
-    for p in fresh:
-        if p not in candidates and p not in blocked:
-            candidates.append(p)
 
-    url = f"https://youtube.com/watch?v={video_id}"
-    # Timeout corto por proxy (PROXY_PROBE_TIMEOUT, 6s por defecto): los
-    # muertos se descartan antes con el sondeo TCP y los buenos responden en
-    # ~3s (validado: 193.25.215.182 dio get-url en ~3s). Se prueban hasta
-    # FREE_PROXY_CANDIDATES, con el filtro TCP el coste de los muertos es
-    # ~1.5s cada uno en lugar de los 6s completos.
-    #
-    # El tope son dos, y el que manda es el reloj: PROXY_SEARCH_BUDGET_S. Con
-    # 60 candidatos y una lista gratuita donde solo pasa el filtro TCP uno de
-    # cada diez, el bucle se pasaría de minuto y medio esperando al último. El
-    # reloj corta antes, así que ampliar candidatos nunca convierte una espera
-    # corta en una larga, solo hace que, cuando hay presupuesto, se mire más
-    # lejos. Ahora se registra si fue el reloj o la lista lo que cortó, porque
-    # "sin proxy" y "no dio tiempo" son fallos distintos.
-    probed = 0
-    started = time.monotonic()
-    cut_by_clock = False
-    for proxy in candidates[:FREE_PROXY_CANDIDATES]:
-        if time.monotonic() - started > PROXY_SEARCH_BUDGET_S:
-            cut_by_clock = True
-            logger.debug(f"Presupuesto de busqueda de proxy agotado "
-                         f"({PROXY_SEARCH_BUDGET_S:.0f}s) tras {probed} probados")
-            break
-        if not _proxy_tcp_alive(proxy):
-            logger.debug(f"Proxy {proxy} no acepta conexión, descartado")
-            continue
-        probed += 1
-        try:
-            cmd = [
-                "yt-dlp", "--no-warnings",
-                "--proxy", proxy,
-                "--user-agent", random.choice(USER_AGENTS),
-                "--extractor-args", _player_client_arg(ANDROID_CLIENT),
-                "-f", "bestaudio/best",
-                "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
-                "--retries", str(YTDLP_RETRIES),
-                "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
-                "--get-url", url,
-            ]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=PROXY_PROBE_TIMEOUT,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                logger.info(f"Proxy activo para {video_id}: {proxy}")
-                # NOTA: NO marcamos el proxy como "working" aqui. Que resuelva
-                # el --get-url no garantiza que la descarga COMPLETA funcione
-                # (la firma de googlevideo puede fallar al descargar). Solo
-                # _stream_proxy_download lo marca al CONFIRMAR la descarga.
-                return proxy
-        except subprocess.TimeoutExpired:
-            # Antes caía en el `except Exception` de abajo y desaparecía sin
-            # dejar rastro, que es como un timeout de sondeo mal calibrado
-            # acaba pareciendo "no hay proxies" en el log.
-            logger.debug(f"Proxy {proxy} no respondió el --get-url en "
-                         f"{PROXY_PROBE_TIMEOUT:.0f}s, descartado")
-            continue
-        except Exception as e:
-            logger.debug(f"Proxy {proxy} falló en el sondeo: {e}")
-            continue
-    logger.info(f"Sin proxy utilizable para {video_id} "
-                f"({probed} probados tras filtro TCP de {len(candidates)}"
+    El sondeo es CONCURRENTE a propósito. Medido el 2026-09-29: en serie, con
+    PROXY_PROBE_TIMEOUT=12 s y un presupuesto de 60 s, de 60 candidatos solo
+    llegaban a probarse ~5 (los que pasaban el filtro TCP), y con una tasa de
+    uso real del 4 % la probabilidad de encontrar uno vivo era del 18 %. Ese
+    18 % es la razón de que en datacenter ganase siempre la vía directa a
+    360p: no es que el proxy no sirva, es que la búsqueda casi nunca llegaba
+    a uno que sirviera. tools/diagnostico/probe.py, que sondea con 12 hilos,
+    sí los encuentra: 4 de los 97 que aceptan TCP sirven 1080p de verdad.
+    """
+    candidates = _proxy_candidates(blocked)
+    if not candidates:
+        return None
+    proxy, _media, probed, cut_by_clock = _probe_candidates(video_id, candidates)
+    if proxy:
+        return proxy
+    logger.info(f"Sin proxy utilizable para {video_id} ({probed} probados de "
+                f"{len(candidates)} candidatos"
                 f"{', cortados por presupuesto de tiempo' if cut_by_clock else ''})")
     return None
 
@@ -970,8 +1098,20 @@ def _find_working_proxy(video_id: str, blocked: set | None = None) -> str | None
 # Invidious fallback — funciona sin cookies/proxy
 # ────────────────────────────────────────────────────────────────
 
-def _invidious_request(url: str, timeout: int = 15) -> dict | str | None:
-    """GET request a instancia Invidious, retorna JSON o None."""
+def _invidious_request(url: str, timeout: int = 15) -> dict | None:
+    """GET a una instancia Invidious. Devuelve el JSON o None.
+
+    Antes devolvía `dict | str | None` y, cuando el cuerpo no era JSON
+    válido, devolvía el TEXTO crudo. Medido el 2026-09-29 eso convertía
+    cualquier respuesta no-JSON en un valor truthy: una instancia caída que
+    responde "Invidious has shutdown" con HTTP 200 pasaba por "instancia
+    viva". Después `invidious_get_audio_url` la rechazaba por no ser dict y
+    el resultado era un 502 sin explicación posible en ningún punto del
+    código, porque en ningún punto había habido un error.
+
+    Ahora solo se acepta un dict. Un cuerpo que no es JSON es una instancia
+    que no sirve, y se trata como tal.
+    """
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": random.choice(USER_AGENTS),
@@ -982,9 +1122,14 @@ def _invidious_request(url: str, timeout: int = 15) -> dict | str | None:
             if data.strip().startswith("<"):
                 return None  # HTML = instance bloqueada
             try:
-                return json.loads(data)
+                parsed = json.loads(data)
             except json.JSONDecodeError:
-                return data
+                if _INVIDIOUS_DEAD_BANNER in data.lower():
+                    logger.warning(
+                        f"Invidious en {url} responde «{_INVIDIOUS_DEAD_BANNER}»: "
+                        "la instancia está apagada y no se volverá a sondear")
+                return None
+            return parsed if isinstance(parsed, dict) else None
     except Exception as e:
         logger.debug(f"Invidious request failed ({url}): {e}")
         return None
@@ -1019,8 +1164,18 @@ def _resolve_invidious_instance() -> str | None:
 def invidious_get_audio_url(video_id: str) -> str | None:
     """Obtiene URL de audio vía Invidious. Retorna None si falla.
 
-    Prueba múltiples instancias si la primera falla.
+    Prueba múltiples instancias si la primera falla. Si un recorrido completo
+    no encuentra ninguna, el host se marca como muerto durante
+    INVIDIOUS_DEAD_COOLDOWN_S: la cadena llega aquí con el cliente ya
+    esperando, y pagar 9×10 s de sondeo a instancias apagadas solo produce el
+    mismo None, más tarde. Al vencer el cooldown se vuelve a mirar por si una
+    instancia ha vuelto.
     """
+    global _invidious_dead_until
+    if time.time() < _invidious_dead_until:
+        logger.debug("Invidious marcado como muerto: se responde al instante")
+        return None
+
     # Primero intentar con la instancia activa conocida
     instance = _resolve_invidious_instance()
     instances_to_try = [instance] if instance else []
@@ -1052,9 +1207,16 @@ def invidious_get_audio_url(video_id: str) -> str | None:
         url = audio_formats[0].get("url")
         if url and url.startswith("https://"):
             logger.info(f"Audio URL via Invidious {inst} for {video_id}")
+            with _invidious_lock:
+                _invidious_dead_until = 0.0
             return url
 
-    logger.warning(f"No Invidious instance could provide audio for {video_id}")
+    # Recorrido completo sin éxito: no se vuelve a pagar hasta el cooldown.
+    with _invidious_lock:
+        _invidious_dead_until = time.time() + INVIDIOUS_DEAD_COOLDOWN_S
+    logger.warning(
+        f"No Invidious instance could provide audio for {video_id}; no se vuelve "
+        f"a buscar en {INVIDIOUS_DEAD_COOLDOWN_S // 60} min")
     return None
 
 

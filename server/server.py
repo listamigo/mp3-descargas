@@ -51,6 +51,7 @@ from download_engine import (
     direct_path_state,
     record_direct_failure,
     record_direct_success,
+    DIRECT_PATH_COOLDOWN_REASON,
     is_video_level_error,
     is_bot_challenge,
     _is_auth_error,
@@ -75,6 +76,17 @@ YTDLP_VERSION = os.environ.get("YTDLP_VERSION", "2026.8.19")
 LOG_FILE = os.environ.get("LOG_FILE", os.path.join(LOG_DIR, "server.log"))
 # Proxy residencial para evitar IPs de datacenter (Railway, etc.)
 RESIDENTIAL_PROXY = os.environ.get("RESIDENTIAL_PROXY", "")
+
+# Escalera de clients que se prueban, UNO POR COMANDO, contra un mismo proxy
+# SOCKS5. Se nombra para que el presupuesto de tiempo del intento se pueda
+# calcular a partir de ella: son 3 clientes y antes cada uno podía comerse
+# los VIDEO_DOWNLOAD_TIMEOUT por separado.
+#
+# mweb primero: es el que expone la escalera completa y es el único verificado
+# bajando 1080p por proxy. Detrás, web_embedded (escalera sin garantía de
+# token) y android (muxed itag 18 de 640x360, sin token, el suelo que cierra
+# la escalera para no devolver 502).
+_PROXY_CLIENTS = ("mweb", "web_embedded", "android")
 
 # ═══════════════════════════════════════════════════════════════
 # Logging
@@ -824,7 +836,20 @@ class APIHandler(BaseHTTPRequestHandler):
         direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "25"))
         if not direct_path_available():
             direct_deadline = 0.0
+            # Igual que en el audio: el motivo del salto se anota para que el
+            # 502 final no acuse a un recurso que no es el culpable.
+            last_err = DIRECT_PATH_COOLDOWN_REASON
         _start = time.monotonic()
+
+        # Techo REAL por client, no solo el deadline de reloj entre clients.
+        # El deadline anterior se comprobaba antes de arrancar el siguiente
+        # client, así que un único client colgado se comía los
+        # VIDEO_DOWNLOAD_TIMEOUT (420 s) enteros sin que el deadline pudiera
+        # actuar. Medido el 2026-09-29: un 1080p se quedó 200 s con 0 bytes
+        # y sin una sola línea de log, porque el cliente no ve ni un byte
+        # hasta tener el MP4 entero. Con este tope, lo que no hayayuk nada
+        # en 90 s se corta y se pasa al siguiente, con el error anotado.
+        per_client_timeout = float(os.environ.get("VIDEO_PER_CLIENT_TIMEOUT", "90"))
 
         for client in ordered_video_clients():
             if time.monotonic() - _start > direct_deadline:
@@ -844,7 +869,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 ]
                 proc = subprocess.run(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=timeout_s,
+                    timeout=min(timeout_s, per_client_timeout),
                 )
                 merged = self._merged_video_in(workdir)
                 if proc.returncode == 0 and merged:
@@ -859,6 +884,15 @@ class APIHandler(BaseHTTPRequestHandler):
                         os.replace(merged, download_path)
                         self._cleanup_download_cache()
                         record_success(client)
+                        # El breaker de la vía directa se cerraba solo en la
+                        # ruta de audio. En la de vídeo no había ninguna
+                        # llamada a record_direct_success(), así que un vídeo
+                        # descargado a la calidad correcta por la vía directa
+                        # dejaba el breaker abierto 300 s de todos modos y
+                        # durante esa ventana no quedaba ninguna vía: con el
+                        # proxy además difícil de encontrar, el resultado era
+                        # el 502 medido el 2026-09-29.
+                        record_direct_success()
                         self._serve_file(download_path, "video/mp4", video_id)
                         return
                     # Mismo criterio que en la ruta del proxy, y hace falta aquí
@@ -908,6 +942,12 @@ class APIHandler(BaseHTTPRequestHandler):
                 break
             workdir = tempfile.mkdtemp(prefix="mp3vid_px_")
             got_short = False
+            # Reloj del INTENTO completo (los 3 clients contra este proxy).
+            # Antes cada client podía comerse los VIDEO_DOWNLOAD_TIMEOUT
+            # (420 s) por su cuenta y un solo proxy colgado se llevaba 21
+            # minutos sin que nadie más pudiera tomar el relevo. Este intento
+            # tiene su presupuesto, y cada client se lleva la parte que queda.
+            attempt_deadline = time.monotonic() + per_client_timeout * len(_PROXY_CLIENTS)
             try:
                 logger.info(f"Vídeo {video_id} ({quality}p) por proxy {proxy} "
                             f"— intento {_attempt + 1}/{max_proxy_attempts}")
@@ -917,13 +957,19 @@ class APIHandler(BaseHTTPRequestHandler):
                 # web_embedded (escalera sin garantía de token) y android (muxed
                 # itag 18 de 640x360, sin token, el suelo que siempre cierra la
                 # escalera para no devolver 502).
-                for clients in ("mweb", "web_embedded", "android"):
+                for clients in _PROXY_CLIENTS:
+                    restante = attempt_deadline - time.monotonic()
+                    if restante <= 5:
+                        last_err = (f"el proxy {proxy} se agotó el tiempo del "
+                                    f"intento sin devolver el vídeo")
+                        logger.warning(f"Vídeo {video_id}: {last_err}")
+                        break
                     cmd = _proxy_cmd_video(video_id, proxy, quality, workdir,
                                            clients=clients,
                                            max_bytes=self.VIDEO_MAX_BYTES)
                     proc = subprocess.run(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        timeout=timeout_s,
+                        timeout=min(timeout_s, max(5.0, restante)),
                     )
                     merged = self._merged_video_in(workdir)
                     if merged:
@@ -1070,6 +1116,14 @@ class APIHandler(BaseHTTPRequestHandler):
             # Ya sabemos que esta IP recibe el reto de bot en todos los
             # clients. Saltar los intentos fallidos y yendo directo al proxy.
             direct_deadline = 0.0
+            # El motivo del salto se anota como último error. Sin esto,
+            # `last_err` se queda en "" y el mensaje final acaba culpando a
+            # Invidious de un fallo que no es suyo: `is_bot_challenge("")` es
+            # False, así que siempre ganaba la rama de "Invidious fallback: no
+            # audio URL available" (server.py:1390) en vez de la que dice que
+            # el bloqueo es de IP. El usuario recibía un 502 que no explicaba
+            # nada de lo que pasaba.
+            last_err = DIRECT_PATH_COOLDOWN_REASON
             logger.info(
                 f"Vía directa en cooldown ({video_id}): yendo directo al proxy "
                 f"sin gastar los {os.environ.get('DIRECT_CLIENTS_DEADLINE', '8')}s "
@@ -1383,13 +1437,26 @@ class APIHandler(BaseHTTPRequestHandler):
 
         audio_url = invidious_get_audio_url(video_id)
         if not audio_url:
+            # El mensaje tiene que decir POR QUÉ no se pudo descargar. Antes
+            # solo había dos ramas y la de "Invidious" se llevaba el fallo
+            # aunque Invidious fuese inocente: cuando el breaker de la vía
+            # directa estaba abierto, `reason` llegaba vacío (nadie había
+            # intentado nada todavía), así que is_bot_challenge("") era False
+            # y el 502 siempre decía "Invidious fallback: no audio URL
+            # available". Medido el 2026-09-29.
             if is_bot_challenge(reason):
                 mensaje = ("YouTube bloquea este servidor por IP de datacenter "
                            "(challenge de bot). El vídeo no es el problema")
+            elif is_video_level_error(reason):
+                mensaje = reason[:200] or "El vídeo no está disponible"
             else:
-                mensaje = "Invidious fallback: no audio URL available"
+                mensaje = ("No se pudo descargar: no se encontró ninguna vía "
+                           "libre (ni acceso directo ni proxy)")
+            cuerpo = {"error": mensaje}
+            if reason:
+                cuerpo["detail"] = reason[:300]
             try:
-                self._json(502, {"error": mensaje})
+                self._json(502, cuerpo)
             except Exception:
                 pass
             return
@@ -1723,7 +1790,12 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
 
         # Todos los clients fallaron → intentar proxy SOCKS5
-        record_direct_failure()
+        # Misma razón que en las otras dos rutas: un fallo del vídeo (no
+        # existe, es privado, se borró) no dice nada de nuestra IP, y abrir el
+        # breaker entera por eso tumba también las descargas que sí
+        # funcionarían durante DIRECT_PATH_DISABLED_S.
+        if not is_video_level_error(last_err):
+            record_direct_failure()
         # (descarga COMPLETA vía proxy para que la firma de la URL coincida)
         logger.info(f"yt-dlp preview falló para {video_id}, intentando proxy SOCKS5...")
         proxy = _find_working_proxy(video_id)
