@@ -884,6 +884,14 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
     va a stdout, mientras que el merge de vídeo necesita un fichero real donde
     ffmpeg pueda escribir el contenedor MP4 (no se puede muxear MP4 a un pipe
     sin usar flags de fragmentado que no queremos en la salida final).
+
+    Los reintentos y el `--socket-timeout` no son opcionales: son lo que corta
+    una descarga COLGADA. Sin `--socket-timeout`, un SOCKS5 que acepta la
+    conexión y luego deja de mandar datos deja el proceso esperando
+    indefinidamente, y medido el 2026-09-29 eso son los 200 s a 0 % sin una
+    línea de log. El timeout de socket mide **inactividad**, no duración, así
+    que no castiga una descarga lenta pero sí viva: por eso el tope de pared
+    del servidor puede ser holgado sin miedo de cortar una descarga sana.
     """
     return [
         "yt-dlp", "--no-warnings",
@@ -897,6 +905,9 @@ def _proxy_cmd_video(video_id: str, proxy: str, quality: int, workdir: str,
         # falla dentro del contenedor, la extraccion de mweb hereda el fallo
         # y no devuelve NADA -> cascada al suelo android de 360p. La via
         # directa (_base_cmd) SI lleva su provider; esta ruta no.
+        "--extractor-retries", str(YTDLP_EXTRACTOR_RETRIES),
+        "--retries", str(YTDLP_RETRIES),
+        "--socket-timeout", str(YTDLP_SOCKET_TIMEOUT),
         "-f", video_format_selector(quality),
         "--merge-output-format", "mp4",
         "--no-playlist", "--no-part",

@@ -895,11 +895,17 @@ class APIHandler(BaseHTTPRequestHandler):
         # El deadline anterior se comprobaba antes de arrancar el siguiente
         # client, así que un único client colgado se comía los
         # VIDEO_DOWNLOAD_TIMEOUT (420 s) enteros sin que el deadline pudiera
-        # actuar. Medido el 2026-09-29: un 1080p se quedó 200 s con 0 bytes
-        # y sin una sola línea de log, porque el cliente no ve ni un byte
-        # hasta tener el MP4 entero. Con este tope, lo que no hayayuk nada
-        # en 90 s se corta y se pasa al siguiente, con el error anotado.
-        per_client_timeout = float(os.environ.get("VIDEO_PER_CLIENT_TIMEOUT", "90"))
+        # actuar.
+        #
+        # Este valor NO es el que corta las descargas colgadas: de eso se
+        # encarga `--socket-timeout` (20 s de inactividad), que `_proxy_cmd_video`
+        # ahora lleva y antes no llevaba. Medido el 2026-09-30: con 90 s de
+        # tope de pared, una descarga de 1080p legítima por un SOCKS5 lento
+        # se cortaba a mitad — 51 MB por un proxy gratuito puede tardar 3-5
+        # min—, y el resultado era un 1080p que no llegaba. El tope de pared
+        # va holgado a propósito: corta lo que se cuelga de verdad, que el
+        # socket-timeout ya no deja pasar, y deja descargar lo que va despacio.
+        per_client_timeout = float(os.environ.get("VIDEO_PER_CLIENT_TIMEOUT", "300"))
 
         for client in ordered_video_clients():
             if time.monotonic() - _start > direct_deadline:
