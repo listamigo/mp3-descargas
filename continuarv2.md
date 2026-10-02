@@ -36,6 +36,11 @@ llegaba a probarse. Ver §9.
 > y **son falsas**. Dejarlas como está garantiza que la próxima sesión vuelva a
 > perder horas en ellas. Lo que sí sigue válido está marcado como tal en §3.
 > Todo lo de aquí son **mediciones de producción**, no hipótesis.
+>
+> ⚠️ **Y `continuarv3.md` corrige a ESTE archivo** (2026-10-01). El punto 2 de
+> §10 de aquí afirma que las cookies están descartadas. **Es falso**, y las
+> cookies son justo lo que desbloquea el vídeo sin proxies. Antes de tocar
+> proxies o cookies, leer `continuarv3.md`.
 
 ---
 
@@ -554,7 +559,12 @@ prueba.
    datacenter. La IP de Railway es otra, así que el primer `curl` de §8 tiene que
    confirmar que allí también sale 1080p. Ojo a la trampa de §5.4: comprobar
    `build_commit` en `/api/health` antes de creer nada.
-2. **`PO_TOKEN_PROVIDER` / cookies**: no tocar. §2.4 y §4.2 ya lo descartaron, y
-   §9 lo demuestra desde otro ángulo (el 1080p sale sin token).
+2. ~~**`PO_TOKEN_PROVIDER` / cookies**: no tocar.~~ **CORREGIDO el 2026-10-01:
+   este punto era FALSO. Ver `continuarv3.md`.** Las cookies válidas sí
+   desbloquean el vídeo por vía directa, sin proxies: medido 720p en 17.8 s y
+   1080p en 21-26 s, con **0** proxies usados. Además se rectifica otra cosa que
+   aquí se daba por buena: el 1080p NO sale sin token; sale con PO token
+   (`bgutil`, que ya estaba instalado) **más** cookies. Con cookies, la vía
+   directa deja de dar solo storyboards y devuelve la escalera completa.
 3. **`desktop/` y `deb-package/`**: no subir, no tocar. Sigue en pie la regla del
    usuario.
