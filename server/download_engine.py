@@ -443,6 +443,41 @@ def is_video_level_error(text: str) -> bool:
     return any(marker in lowered for marker in _VIDEO_LEVEL_ERRORS)
 
 
+def is_video_unavailable(text: str) -> bool:
+    """True solo si el VÍDEO no existe o no se puede ver. Ninguna otra cosa.
+
+    Es deliberadamente MÁS ESTRECHO que `is_video_level_error`, y esa
+    diferencia es el bug que se arregló el 2026-10-01. Aquí NO entran:
+
+      · "Sign in to confirm you're not a bot"  → bloqueo de IP, el proxy
+        SOCKS5 de la ruta de descarga sí sale.
+      · "Requested format is not available"     → el síntoma TÍPICO del
+        bloqueo desde datacenter en `web_embedded` (documentado en el propio
+        `_proxy_video_download`), no la ausencia del vídeo.
+      · "unable to extract" / "no video formats" → fallo de extracción, que
+        pasa con todos los clients cuando la IP está quemada.
+
+    Esos tres los incluye `is_video_level_error` porque allí sirven: allí
+    controlan si se abre el breaker de la vía directa, y un challenge de bot
+    tiene que abrirlo. Para RESPONDERLE al cliente si se puede servir un vídeo,
+    un challenge o un fallo de extracción no son prueba de nada: la descarga
+    real tiene rutas que este sondeo no prueba, así que solo se afirma `ok:
+    false` cuando el vídeo no está.
+    """
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in (
+        "this video is unavailable",
+        "video unavailable",
+        "video is not available",
+        "this video is private",
+        "private video",
+        "removed by the uploader",
+        "has not made this video available",
+        "account associated with this video has been terminated",
+        "who has blocked it on copyright grounds",
+    ))
+
+
 def is_bot_challenge(text: str) -> bool:
     """True si YouTube respondió con el challenge que pide sesión o cookies.
 
@@ -458,8 +493,6 @@ def is_bot_challenge(text: str) -> bool:
         "use --cookies",
         "login required",
     ))
-    lowered = (text or "").lower()
-    return any(marker in lowered for marker in _VIDEO_LEVEL_ERRORS)
 
 
 def direct_path_state() -> dict:

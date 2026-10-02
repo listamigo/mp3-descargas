@@ -53,6 +53,7 @@ from download_engine import (
     record_direct_success,
     DIRECT_PATH_COOLDOWN_REASON,
     is_video_level_error,
+    is_video_unavailable,
     is_bot_challenge,
     _is_auth_error,
     _is_too_big_error,
@@ -392,17 +393,53 @@ class APIHandler(BaseHTTPRequestHandler):
                 # Deadline corto a propósito: la app espera 25 s y solo cambia
                 # de host si esta respuesta llega antes. Con 15 s hay margen
                 # para que responda aunque YouTube se cuelgue.
+                probe_errors: list = []
                 estimate = self._video_size_estimate(
                     video_id,
                     quality,
                     deadline_s=float(os.environ.get("READY_PROBE_DEADLINE", "15")),
+                    errors=probe_errors,
                 )
+                # ── LA DISTINCIÓN QUE FALTABA ──
+                # Medido el 2026-10-01: este endpoint devolvía ok:false
+                # siempre que no se podía calcular el tamaño, y la app
+                # usa ese ok:false
+                # para ABORTAR la descarga sin intentarla. Con la IP de
+                # datacenter de Railway el sondeo por clients directos está
+                # bloqueado, así que `estimate` era None y `ok` False SIEMPRE
+                # — medido 6/6 en 4 vídeos distintos — mientras que la descarga
+                # real de esos mismos vídeos salía con HTTP 200. El resultado
+                # en el dispositivo era "Todos los motores fallaron: el
+                # servidor no puede acceder a YouTube ahora mismo" sin haber
+                # intentado descargar nada.
+                #
+                # None significa "no se ha podido averiguar", que no es lo mismo
+                # que "no se puede servir". Solo hay una respuesta que sí
+                # significa lo segundo, y es un fallo a nivel del VÍDEO
+                # (no existe, es privado, se ha borrado). Un challenge de
+                # YouTube contra nuestra IP NO lo es: la ruta de descarga tiene
+                # el proxy SOCKS5 como salida, que este sondeo no prueba.
+                # Confundir ambas cosas era el bug.
+                video_gone = (
+                    estimate is None
+                    and any(is_video_unavailable(e) for e in probe_errors)
+                )
+                if video_gone:
+                    logger.info(
+                        "/api/ready %s %dp: el vídeo no está disponible (%s)",
+                        video_id, quality, (probe_errors or [""])[0][:120])
                 self._json(200, {
-                    "ok": estimate is not None,
+                    # ok=False solo ante un fallo del vídeo. Un "no se sabe"
+                    # se responde ok=True: la app descarga, y el tamaño real
+                    # se comprueba en _enforce_video_size, que es la red real.
+                    "ok": not video_gone,
                     "videoId": video_id,
                     "quality": quality,
                     "estimatedBytes": estimate,
                     "limitBytes": self.VIDEO_MAX_BYTES,
+                    # Para diagnóstico: por qué no se pudo estimar. No lo lee
+                    # la app, pero dice por qué un host va lento o falla.
+                    "probeErrors": [e[:200] for e in probe_errors[-3:]],
                 })
                 return
 
@@ -703,7 +740,11 @@ class APIHandler(BaseHTTPRequestHandler):
         return None
 
     def _video_size_estimate(
-        self, video_id: str, quality: int, deadline_s: float | None = None
+        self,
+        video_id: str,
+        quality: int,
+        deadline_s: float | None = None,
+        errors: list | None = None,
     ) -> int | None:
         """Peso estimado del MP4 que se pediría, sin descargar nada.
 
@@ -717,6 +758,13 @@ class APIHandler(BaseHTTPRequestHandler):
         Devuelve None cuando no se puede saber (todos los clientes fallan, el
         vídeo no expone el tamaño). None nunca bloquea la descarga: el peso
         real se comprueba después del merge, que es la red de seguridad.
+
+        `errors` es un canal de salida opcional donde se acumulan los motivos
+        del fallo. Sin él, None no distingue dos situaciones opuestas: «este
+        vídeo no existe» y «no se ha podido averiguar». Lo que hace la función
+        es quedarse en la vía directa, así que desde una IP de datacenter lo
+        normal es que la segunda ocurra y la descarga aun así salga por el
+        proxy; ese canal es lo que permite a `/api/ready` no mentir.
         """
         fmt = self._video_format_selector(quality)
         url = f"https://youtube.com/watch?v={video_id}"
@@ -748,6 +796,8 @@ class APIHandler(BaseHTTPRequestHandler):
 
         for client in ordered_video_clients():
             if time.monotonic() - start > deadline:
+                if errors is not None:
+                    errors.append("deadline de sondeo agotado sin estimar")
                 break
             cmd = _base_cmd(client) + ["-J", "--no-playlist", "-f", fmt, url]
             try:
@@ -756,15 +806,23 @@ class APIHandler(BaseHTTPRequestHandler):
                     timeout=max(2.0, min(per_client, deadline - (time.monotonic() - start))),
                 )
             except subprocess.TimeoutExpired:
-                break
+                if errors is not None:
+                    errors.append(f"timeout del client {client}")
+                continue
             except Exception as e:
                 logger.debug(f"Estimación de tamaño falló con {client}: {e}")
+                if errors is not None:
+                    errors.append(str(e)[:200])
                 continue
             if proc.returncode != 0:
+                if errors is not None:
+                    errors.append((proc.stderr or b"").decode(errors="replace")[-300:])
                 continue
             try:
                 info = json.loads((proc.stdout or b"").decode(errors="replace"))
             except (ValueError, AttributeError):
+                if errors is not None:
+                    errors.append(f"salida no parseable del client {client}")
                 continue
             # Con un selector de dos pistas, `requested_formats` trae el vídeo y
             # el audio por separado y el peso final es la suma de los dos. Con un
@@ -781,6 +839,8 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._SIZE_ESTIMATE_CACHE[key] = (time.time(), total)
                 return total
         logger.info(f"Sin tamaño estimado para {video_id}; se procede sin comprobar")
+        if errors is not None and not errors:
+            errors.append("ningún client devolvió formatos utilizables")
         self._SIZE_ESTIMATE_CACHE[key] = (time.time(), None)
         return None
 
