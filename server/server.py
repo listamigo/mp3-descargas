@@ -1052,7 +1052,53 @@ class APIHandler(BaseHTTPRequestHandler):
             record_direct_failure()
         blocked: set = set()
         max_proxy_attempts = int(os.environ.get("MAX_PROXY_ATTEMPTS", "3"))
+        # ── RELOJ DE LA FASE DE VÍDEO POR PROXY ──
+        # El audio tiene uno (PROXY_PHASE_BUDGET_S) y el vídeo no. Esa
+        # ausencia es la lentitud medida el 2026-10-01: se pedía
+        # 720p, la escalera no encontraba nada mejor, y el usuario esperaba
+        # 3 búsquedas de proxy de hasta 60 s cada una (más la descarga) para
+        # acabar recibiendo el 360p de repuesto. Medido: 209 s para un MP4 de
+        # 13 MB, y el resultado era el mismo 360p que salía en 5-7 s cuando
+        # esa misma vía directa servía el muxed sin más.
+        #
+        # El commit 6d96128 (27-09) quitó el 360p corto de propósito, para no
+        # prometer 1080p y dar 360p. Ese objetivo sigue en pie, pero su
+        # precio —minutos por cada descarga— es peor que el problema que
+        # arregla: el usuario no quiere esperar 3 min un 360p, quiere un 360p
+        # YA. La escalera se mantiene, con reloj: se busca la calidad pedida
+        # mientras quede presupuesto, y en cuanto se agota se sirve lo mejor
+        # que haya salido. Con el proxy bueno, 1080p sigue llegando.
+        video_proxy_budget_s = float(
+            os.environ.get("VIDEO_PROXY_PHASE_BUDGET_S", "90"))
+        video_proxy_deadline = time.monotonic() + video_proxy_budget_s
+        # ── EL TECHO QUE FALTA: no gastar 4 min en una descarga lenta ──
+        # El reloj de arriba solo decide si se busca OTRO proxy. No toca la
+        # descarga que ya está en marcha, porque el tiempo de esa descarga está
+        # DENTRO del subprocess de yt-dlp. Medido el 2026-10-01 con el reloj a
+        # 15 s: el proxy se encontró en 18 s y la descarga tardó 260 s más
+        # (25,8 MB a 97 KiB/s), o sea 320 s para un 720p por un SOCKS5
+        # gratuito. Ningún reloj entre iteraciones arregla eso.
+        #
+        # Lo que sí lo arregla es un tope de MURO por descarga, que es lo que
+        # ya usa el audio: `VIDEO_PER_CLIENT_TIMEOUT` es 300 s de duración
+        # total. Para el vídeo ese valor es enorme: un SOCKS5 a 97 KiB/s saca
+        # 30 MB en 5 min, así que cualquier tope holgado deja pasar lo que sea.
+        # Se baja a un valor que siga dejando bajar un 1080p con un proxy
+        # decente (medido: 94 MB en 175 s) y aborte antes los que van a 97
+        # KiB/s. El que se corta guarda su parte en .bajoN y se sirve como
+        # repuesto, así que no se pierde trabajo.
+        proxy_download_timeout = float(
+            os.environ.get("VIDEO_PROXY_DOWNLOAD_TIMEOUT", "200"))
         for _attempt in range(max_proxy_attempts):
+            # El reloj se comprueba ANTES de buscar otro proxy, que es donde
+            # se va el tiempo. Sin esto, el último intento se gasta entero.
+            if fallback_path and time.monotonic() > video_proxy_deadline:
+                logger.info(
+                    "Vídeo %s: presupuesto de %.0fs agotado tras %d intento(s); "
+                    "se sirve lo mejor que hay (%dp)",
+                    video_id, video_proxy_budget_s, _attempt,
+                    self._file_height(fallback_path))
+                break
             proxy = _find_working_proxy(video_id, blocked=blocked)
             if not proxy:
                 break
@@ -1063,7 +1109,13 @@ class APIHandler(BaseHTTPRequestHandler):
             # (420 s) por su cuenta y un solo proxy colgado se llevaba 21
             # minutos sin que nadie más pudiera tomar el relevo. Este intento
             # tiene su presupuesto, y cada client se lleva la parte que queda.
-            attempt_deadline = time.monotonic() + per_client_timeout * len(_PROXY_CLIENTS)
+            # El techo del intento es ahora `proxy_download_timeout` y no
+            # `per_client_timeout * len(clients)` (que eran 900 s): medido el
+            # 2026-10-01, un SOCKS5 a 97 KiB/s se comía 260 s de los 900 sin
+            # que nada lo cortara. El mínimo con `per_client_timeout` evita
+            # que un valor de entorno bajo corte antes del primer byte.
+            attempt_deadline = time.monotonic() + max(
+                proxy_download_timeout, 60.0)
             try:
                 logger.info(f"Vídeo {video_id} ({quality}p) por proxy {proxy} "
                             f"— intento {_attempt + 1}/{max_proxy_attempts}")
