@@ -174,7 +174,14 @@ PO_TOKEN = os.environ.get("YT_PO_TOKEN")
 # reintento interno a 1 y la cadena de respaldo se encarga del resto.
 YTDLP_EXTRACTOR_RETRIES = int(os.environ.get("YTDLP_EXTRACTOR_RETRIES", "1"))
 YTDLP_RETRIES = int(os.environ.get("YTDLP_RETRIES", "3"))
-YTDLP_SOCKET_TIMEOUT = int(os.environ.get("YTDLP_SOCKET_TIMEOUT", "20"))
+# 20 s estaba bien en local. Medido el 2026-10-01 en Railway con cookies: la
+# extracción tardaba 7x más (MP3 en 66,8 s frente a 9,4 s en local), y con
+# 20 s de socket se caían clientes a mitad de extraer — el `web`, que es el
+# único que devuelve la escalera completa, nunca llegaba a responder. 45 s
+# cubre la latencia de un datacenter sin dejar un fallo colgado medio
+# minuto. La espera sigue acotada por DIRECT_CLIENTS_DEADLINE (90 s), así
+# que subir esto no abre la puerta a esperas infinitas.
+YTDLP_SOCKET_TIMEOUT = int(os.environ.get("YTDLP_SOCKET_TIMEOUT", "45"))
 
 # Cuánto esperar un proxy para que responda antes de pagarlo con yt-dlp.
 #

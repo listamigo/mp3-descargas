@@ -984,7 +984,20 @@ class APIHandler(BaseHTTPRequestHandler):
         # dos primeros tardaban 4s cada uno, el tercero que sí iba a funcionar
         # ni se intentaba. Ahora caben 4-5 intentos completos, que es lo que
         # hace falta para llegar al client bueno cuando los anteriores fallan.
-        direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "25"))
+        #
+        # 25 s estaba calibrado con la latencia de local (~4 s por extracción).
+        # Medido el 2026-10-01 en Railway CON cookies: un MP3 tardó 66,8 s
+        # donde en local tardaba 9,4 s — la red de Railway va ~7x más lenta.
+        # Con 25 s de presupuesto el cliente bueno (web, que es el que
+        # devuelve la escalera completa) se quedaba sin tiempo a medio
+        # extraer y salía 360p o 502 por timeout:
+        #   probeErrors: ["timeout del client web_embedded",
+        #                 "timeout del client android",
+        #                 "deadline de sondeo agotado sin estimar"]
+        # 90 s da margen para 2-3 clients completos en Railway. El coste de
+        # pasarse es un 502 algo más lento cuando el vídeo NO existe, que es
+        # un caso raro comparado con el de un vídeo normal que sí existe.
+        direct_deadline = float(os.environ.get("DIRECT_CLIENTS_DEADLINE", "90"))
         if not direct_path_available():
             direct_deadline = 0.0
             # Igual que en el audio: el motivo del salto se anota para que el
