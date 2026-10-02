@@ -42,6 +42,7 @@ COOKIES_FILE,
     video_format_selector,
     _find_working_proxy,
     _remember_working_proxy,
+    _forget_working_proxy as forget_working_proxy,
     ordered_clients,
     ordered_video_clients,
     get_client_health,
@@ -88,7 +89,15 @@ RESIDENTIAL_PROXY = os.environ.get("RESIDENTIAL_PROXY", "")
 # bajando 1080p por proxy. Detrás, web_embedded (escalera sin garantía de
 # token) y android (muxed itag 18 de 640x360, sin token, el suelo que cierra
 # la escalera para no devolver 502).
-_PROXY_CLIENTS = ("mweb", "web_embedded", "android")
+# Clients que se prueban por proxy, en orden. `web` va PRIMERO ahora: medido
+# el 2026-10-02, con cookies activas es el único que resuelve el challenge JS
+# (`[jsc:deno] Solving JS challenges`) y el que devuelve la escalera completa
+# (1280x720, 1920x1080). `mweb` solo llegaba a 640x360 y `android` con cookies
+# se quedaba con la escalera vacía (solo storyboards), así que tenerlo primero
+# gastaba hasta 300 s en clients que no podían superar 360p.
+# `android` se mantiene al final como suelo: el muxed itag 18 (640x360) es el
+# único formato que no necesita token y evita el 502.
+_PROXY_CLIENTS = ("web", "mweb", "web_embedded", "android")
 
 # ═══════════════════════════════════════════════════════════════
 # Logging
@@ -1128,7 +1137,26 @@ class APIHandler(BaseHTTPRequestHandler):
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
 
-        # ── 2. Proxy SOCKS5 ──
+        # ── 2. Proxy SOCKS5, solo si puede MEJORAR la calidad pedida ──
+        #
+        # Si el cliente pidió 360p y ya hay un 360p de la vía directa, buscar
+        # un proxy no puede aportar nada: el proxy solo sirve para subir la
+        # altura. Antes se gastaban hasta 240 s de búsqueda para acabar
+        # sirviendo el mismo 360p que ya estaba en la mano, y ese fue el
+        # "lento pero 360p" que midió el usuario el 2026-10-02 (86 s y 9,5 MB
+        # para un 360p que la vía directa tenía en ~20 s).
+        #
+        # Con calidad pedida > 360p el proxy sí puede ganar, así que ahí se
+        # mantiene la búsqueda entera.
+        if quality <= 360 and fallback_path and \
+                os.path.isfile(fallback_path):
+            logger.info(
+                "Vídeo %s: 360p pedido y ya servido por vía directa; no se "
+                "busca proxy porque no puede superar 360p", video_id)
+            os.replace(fallback_path, download_path)
+            self._serve_file(download_path, "video/mp4", video_id)
+            return
+        #
         # Desde datacenter, la escalera ALTA la da el proxy. La vía directa se
         # queda en el muxed 360p aunque las cookies quiten el challenge: medido
         # el 2026-10-02 en Railway, con `cookies_enabled:true` la respuesta a
@@ -1303,10 +1331,15 @@ class APIHandler(BaseHTTPRequestHandler):
                 # Un proxy que no entregó nada (falló entero) sí se aparta.
                 if not got_short:
                     blocked.add(proxy)
+                    forget_working_proxy(proxy)
                 logger.warning(f"Vídeo no servido por proxy {proxy}: {last_err}")
             except subprocess.TimeoutExpired:
                 last_err = "timeout en el proxy"
                 blocked.add(proxy)
+                # Un proxy guardado que se cuelga está muerto: los SOCKS5
+                # gratuitos caen sin aviso y volver a probarlo en el siguiente
+                # request solo repite el mismo timeout. Fuera de la lista.
+                forget_working_proxy(proxy)
                 logger.warning(f"Vídeo timeout por proxy {proxy}")
             except Exception as e:
                 last_err = str(e)[:300]

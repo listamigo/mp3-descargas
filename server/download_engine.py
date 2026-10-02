@@ -628,12 +628,23 @@ TCP_PROBE_TIMEOUT = float(os.environ.get("TCP_PROBE_TIMEOUT", "1.5"))
 TCP_PROBE_WORKERS = int(os.environ.get("PROXY_TCP_WORKERS", "24"))
 YTDLP_PROBE_WORKERS = int(os.environ.get("PROXY_PROBE_WORKERS", "12"))
 
-# El proxy que funcionó, para no re-descubrirlo en cada request. Se guarda
-# en un fichero porque en un plan gratis el contenedor se reinicia o se
+# Los proxies que funcionaron, para no re-descubrirlos en cada request. Se
+# guarda en un fichero porque en un plan gratis el contenedor se reinicia o se
 # suspende con frecuencia, y la memoria del proceso se pierde: sin esto,
 # cada descarga tras un reinicio volvería a pagar el escaneo completo.
 # WORKING_PROXY en el entorno tiene prioridad (permite fijarlo sin esperar
 # a que el proceso aprenda uno).
+#
+# Antes esto guardaba UN proxy. Medido el 2026-10-02: los SOCKS5 públicos
+# gratuitos mueren y se renuevan (de 80 candidatos sondados, 0 responders
+# con "general SOCKS server failure", el mismo día que el día anterior
+# weren't dead). Fijar uno solo deja el sistema inservible en cuanto ese
+# muere, y además `WORKING_PROXY_FILE` se sobreescribe con `write`, no con
+# `append`: solo sobrevivía el último.
+#
+# Ahora es una LISTA y se prueba por orden: los más recientes primero, y el
+# que falla se aparta en vez de arrastrar al resto. Así, con N proxies
+# buenos vivos, se rotan solos y ninguno es un punto único de fallo.
 WORKING_PROXY = os.environ.get("WORKING_PROXY", "").strip()
 WORKING_PROXY_FILE = os.path.join(
     os.environ.get("LOG_DIR", os.path.expanduser("~/.mp3downloader/logs")),
@@ -676,13 +687,46 @@ def _load_working_proxies() -> list[str]:
 
 
 def _persist_working_proxy(proxy: str) -> None:
-    """Guarda el proxy bueno en disco para sobrevivir a un reinicio."""
+    """Guarda el proxy bueno en disco para sobrevivir a un reinicio.
+
+    ANTES sobreescribía el fichero con un solo proxy (`write`), así que el
+    último encontrado borraba al anterior. Ahora se acumulan hasta
+    `_WORKING_PROXY_MAX` y se prueban por orden de más reciente a más viejo.
+    """
     try:
         os.makedirs(os.path.dirname(WORKING_PROXY_FILE), exist_ok=True)
+        kept: list[str] = [proxy]
+        if os.path.isfile(WORKING_PROXY_FILE):
+            with open(WORKING_PROXY_FILE, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    p = line.strip()
+                    if p and p != proxy and p not in kept:
+                        kept.append(p)
         with open(WORKING_PROXY_FILE, "w", encoding="utf-8") as fh:
-            fh.write(proxy + "\n")
+            fh.write("\n".join(kept[:_WORKING_PROXY_MAX]) + "\n")
     except OSError as e:
         logger.debug(f"No se pudo escribir {WORKING_PROXY_FILE}: {e}")
+
+
+def _forget_working_proxy(proxy: str) -> None:
+    """Quita un proxy que falló, para no volver a perder tiempo con él.
+
+    Los SOCKS5 gratuitos mueren sin aviso, así que uno que acaba de fallar
+    no va a funcionar en el siguiente request. Omitirlo del fichero es lo que
+    hace que la lista se mantenga viva sola con el uso: los que fallan se van,
+    los que sirven se quedan. Es también lo que evita el ciclo de "encuentra
+    un proxy, funciona una vez, muere, y se vuelve a buscar el mismo".
+    """
+    try:
+        if not os.path.isfile(WORKING_PROXY_FILE):
+            return
+        with open(WORKING_PROXY_FILE, "r", encoding="utf-8") as fh:
+            kept = [ln.strip() for ln in fh if ln.strip() and ln.strip() != proxy]
+        with open(WORKING_PROXY_FILE, "w", encoding="utf-8") as fh:
+            if kept:
+                fh.write("\n".join(kept) + "\n")
+    except OSError as e:
+        logger.debug(f"No se pudo actualizar {WORKING_PROXY_FILE}: {e}")
 
 
 def _remember_working_proxy(proxy: str) -> None:
@@ -837,6 +881,10 @@ def _proxy_candidates(blocked: set | None = None) -> list[str]:
     Compartido por `_find_working_proxy` y `_try_with_proxy` para que las dos
     rutas compongan la lista igual. Un proxy en `blocked` es uno cuya descarga
     COMPLETA ya falló en esta petición, así que no se vuelve a probar.
+
+    Los conocidos se emiten los más recientes primero (el fichero se escribe
+    con el último encontrado al principio). Al principio iban en orden de
+    fichero y el último encontrado tapaba al resto.
     """
     blocked = blocked or set()
     candidates: list[str] = []
