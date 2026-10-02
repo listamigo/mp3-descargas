@@ -1021,10 +1021,40 @@ class APIHandler(BaseHTTPRequestHandler):
         # socket-timeout ya no deja pasar, y deja descargar lo que va despacio.
         per_client_timeout = float(os.environ.get("VIDEO_PER_CLIENT_TIMEOUT", "300"))
 
+        # ── El presupuesto de la vía directa NO puede comerse el del proxy ──
+        # Este es el bug que producía "1080p pedido -> 360p servido en 112 s",
+        # medido el 2026-10-02 en Railway. Arithmetic:
+        #   DIRECT_CLIENTS_DEADLINE = 90 s (subido en 4b67e76 para compensar la
+        #   latencia de Railway) + PROXY_PHASE_BUDGET_S = 90 s, pero el reloj
+        #   del proxy se crea DESPUÉS del bucle directo, así que en el papel
+        #  reachía. El problema real es que el bucle directo se come los 90 s
+        #  probando 6 clients que degradan a 360p, y cuando el proxy empieza
+        #   el usuario ya ha esperado 90 s. Con `has_proxy:false` y la cookie
+        #   degradada, el proxy ni se llega a probar bien y se sirve el 360p
+        #   de repuesto.
+        #
+        # Lo que se hace aquí es ACOTAR la vía directa en cuanto ya hay un
+        # repuesto de la calidad pedida: si un client directo ya dio 360p y
+        # queremos 720p, seguir probando los otros clients directos solo suma
+        # minutos — la escalera alta, cuando existe, la da el proxy. Así que
+        # tras el primer resultado por debajo de lo pedido, la vía directa
+        # tiene un presupuesto corto y el proxy recibe el resto.
+        direct_giveup_s = float(
+            os.environ.get("DIRECT_GIVEUP_AFTER_FALLBACK_S", "20"))
+
         for client in ordered_video_clients():
-            if time.monotonic() - _start > direct_deadline:
-                logger.info(f"Deadline de clients directos alcanzado para vídeo "
-                            f"{video_id}, pasando a proxy")
+            # Presupuesto per-client: corto si ya hay repuesto (los otros
+            # clients directos no van a mejorar la altura; miden lo mismo).
+            if fallback_path:
+                restante_directo = direct_giveup_s
+            else:
+                restante_directo = direct_deadline
+            elapsed = time.monotonic() - _start
+            if elapsed > restante_directo:
+                logger.info(
+                    "Vídeo %s: vía directa %s tras %.0fs (repuesto de %dp en "
+                    "mano), pasando al proxy", video_id, client, elapsed,
+                    self._file_height(fallback_path))
                 break
             workdir = self._video_workdir("mp3vid_")
             try:
@@ -1098,7 +1128,24 @@ class APIHandler(BaseHTTPRequestHandler):
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
 
-        # ── 2. Proxy SOCKS5, que es la única vía que funciona desde datacenter ──
+        # ── 2. Proxy SOCKS5 ──
+        # Desde datacenter, la escalera ALTA la da el proxy. La vía directa se
+        # queda en el muxed 360p aunque las cookies quiten el challenge: medido
+        # el 2026-10-02 en Railway, con `cookies_enabled:true` la respuesta a
+        # un 1080p pedido fue 640x360. Las cookieskv2 dan lo mismo en local
+        # (mweb 640x360, web/ios solo storyboards). Es decir: las cookies
+        # quitan el challenge, pero la altura la decide la reputación de la
+        # IP, y una IP de datacenter degradada no sube por mucho que haya
+        # sesión iniciada. El proxy es lo que sí alcanza 720p/1080p, porque
+        # cada IP gratuita tiene su propia reputación y algunas sí pasan.
+        #
+        # Por eso el presupuesto es de 240 s y no de 90: es la fase que
+        # entrega la calidad pedida, y con 90 s se agotaba antes de que un
+        # proxy decente terminara de descargar (medido: 94 MB en 175 s por un
+        # proxy a ~500 KiB/s). El límite de Railway son 5 min por request y
+        # la vía directa ya se ha comido su parte, así que 240 s deja margen
+        # para un intento completo y sirve el repuesto si no da tiempo a más.
+        #
         # Un vídeo que no está disponible no dice nada de nuestra IP: si eso
         # abriera el breaker, serían 5 minutos con todos los clientes saltados
         # y los vídeos que sí funcionan caerían también.
@@ -1123,7 +1170,7 @@ class APIHandler(BaseHTTPRequestHandler):
         # mientras quede presupuesto, y en cuanto se agota se sirve lo mejor
         # que haya salido. Con el proxy bueno, 1080p sigue llegando.
         video_proxy_budget_s = float(
-            os.environ.get("VIDEO_PROXY_PHASE_BUDGET_S", "90"))
+            os.environ.get("VIDEO_PROXY_PHASE_BUDGET_S", "240"))
         video_proxy_deadline = time.monotonic() + video_proxy_budget_s
         # ── EL TECHO QUE FALTA: no gastar 4 min en una descarga lenta ──
         # El reloj de arriba solo decide si se busca OTRO proxy. No toca la
