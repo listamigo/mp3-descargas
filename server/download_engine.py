@@ -120,6 +120,24 @@ COOKIES_FILE = os.environ.get(
     os.path.expanduser("~/.mp3downloader/cookies/cookies.txt")
 )
 
+# ── Cookies SON opt-in, no opt-out ──
+# Medido el 2026-10-01: con un cookies.txt presente pero caducado, la app
+# empezaba por `use_cookies=True` (ver `get_audio_url`), gastaba un intento
+# COMPLETO por client con "Sign in to confirm you're not a bot" y sólo
+# después probaba sin cookies. Con 7 clients eso son varios minutos de
+# espera para acabar descargando sin cookies igual, que es lo que sí
+# funciona desde IP de datacenter.
+#
+# Es exactamente lo queKabaron otros agentes y lo que el usuariovio:
+# "con cookies dejaban de descargarse los archivos", y la reacción natural
+# —borrarlas— era correcta peroavosaba el diagnóstico en vez de arreglarlo.
+#
+# Arriba, el vídeo SÍ puede ganar calidad alta con cookies válidas, así que
+# no se eliminan: se invierten. `USE_COOKIES=1` las activa explícitamente y
+# el orden pasa a ser sin-cookies primero, con cookies como último recurso.
+# Así el peor caso de un cookies.txt roto es un segundo más, nunca una caída.
+USE_COOKIES = os.environ.get("USE_COOKIES", "0").strip() in ("1", "true", "yes")
+
 # Order matters: clients that bypass YouTube's bot/login challenge are
 # tried first so downloads keep working even when cookies are missing or
 # expired. With valid cookies, `android` is the most reliable client to
@@ -1371,6 +1389,24 @@ def po_http_provider_alive(force: bool = False) -> bool:
     return _po_http_alive
 
 
+def _cookie_passes() -> list[bool]:
+    """Pases de cookies para un barrido de clients, en el orden correcto.
+
+    Sin cookies activas (lo normal, y lo que funciona desde datacenter):
+    un solo pase, `False`.
+
+    Con `USE_COOKIES=1`: sin cookies PRIMERO y con cookies después. Al revés
+    que antes a propósito — el fichero de cookies es lo no fiable (caduca,
+    se exporta mal, la sesión muere), así que cuando está puesto se lo trata
+    como el recurso escaso y no como el bueno.
+    """
+    if not USE_COOKIES or not os.path.isfile(COOKIES_FILE):
+        return [False]
+    if os.path.getsize(COOKIES_FILE) == 0:
+        return [False]
+    return [False, True]
+
+
 def _base_cmd(client: str | None = None, cookies: bool = True) -> list[str]:
     """Return base yt-dlp args common to all invocations.
 
@@ -1470,7 +1506,7 @@ class DownloadEngine:
     def get_audio_url(self, song: Song) -> str:
         url = f"https://youtube.com/watch?v={song.id}"
         last_err = ""
-        cookie_passes = [True, False] if os.path.isfile(COOKIES_FILE) else [False]
+        cookie_passes = _cookie_passes()
         for use_cookies in cookie_passes:
             for client in ordered_clients():
                 cmd = _base_cmd(client, cookies=use_cookies) + [
@@ -1540,7 +1576,7 @@ class DownloadEngine:
         last_error = ""
         # Pass 1: with cookies (best quality / restricted content).
         # Pass 2: without cookies (tv_embedded etc. bypass bot checks).
-        cookie_passes = [True, False] if os.path.isfile(COOKIES_FILE) else [False]
+        cookie_passes = _cookie_passes()
         for use_cookies in cookie_passes:
             for client in ordered_clients():
                 for fmt in format_attempts:

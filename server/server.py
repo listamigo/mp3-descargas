@@ -34,7 +34,8 @@ from urllib.parse import urlparse, parse_qs
 from models.song import Song
 from download_engine import (
     DownloadEngine,
-    COOKIES_FILE,
+COOKIES_FILE,
+    USE_COOKIES,
     _base_cmd,
     _proxy_cmd,
     _proxy_cmd_video,
@@ -456,7 +457,13 @@ class APIHandler(BaseHTTPRequestHandler):
                 )
                 self._json(200, {
                     "status": "ok",
+                    # `has_cookies` decía solo "¿existe el fichero?". Eso hizo
+                    # pensar durante días que había cookies activas en Render
+                    # cuando lo único que había era un fichero caducado que
+                    #además ya no se usa (USE_COOKIES=0). Se separan las dos
+                    # cosas: el fichero puede estar ahí sin que se use.
                     "has_cookies": os.path.isfile(COOKIES_FILE),
+                    "cookies_enabled": USE_COOKIES,
                     "has_proxy": bool(RESIDENTIAL_PROXY),
                     "has_po_provider": po_provider_ok,
                     "po_provider_url": po_provider_url or None,
