@@ -97,6 +97,40 @@ _PROXY_CLIENTS = ("mweb", "web_embedded", "android")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(COOKIES_FILE), exist_ok=True)
 
+# ═══════════════════════════════════════════════════════════════
+# Cookies desde variable de entorno (Railway / Render / cualquier
+# despliegue donde no se puede subir un fichero al contenedor)
+# ═══════════════════════════════════════════════════════════════
+# En producción no hay forma de meter un cookies.txt en la imagen sin
+# commitear una sesión de Google, así que el fichero se escribe al
+# arrancar a partir de `COOKIES_B64`.
+#
+# Por qué base64: un cookies.txt en Netscape lleva saltos de línea y
+# tabuladores, y una variable de entorno de Railway es de una línea.
+# Base64 lo hace transportable y, además, evita que el formato se
+# corrompa al copiar y pegar.
+#
+# Solo escribe si USE_COOKIES está activo: tener la variable puesta sin
+# querer activaría el fichero por el lado, que es justo el orden de
+# precedencia que se corrigió en `eb34653` (las cookies nunca ganan).
+_cookies_b64 = os.environ.get("COOKIES_B64", "").strip()
+if _cookies_b64:
+    try:
+        import base64
+        _raw = base64.b64decode(_cookies_b64).decode("utf-8", "replace")
+        if _raw.lstrip().startswith("# Netscape") and len(_raw) > 100:
+            if not os.path.isfile(COOKIES_FILE) or \
+                    os.path.getsize(COOKIES_FILE) != len(_raw):
+                with open(COOKIES_FILE, "w", encoding="utf-8") as _fh:
+                    _fh.write(_raw)
+            logging.info("Cookies escritas desde COOKIES_B64 (%d bytes)",
+                         len(_raw))
+        else:
+            logging.warning("COOKIES_B64 no parece un cookies.txt válido; "
+                            "se ignora")
+    except Exception as _exc:
+        logging.warning("No se pudo escribir COOKIES_B64: %s", _exc)
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
